@@ -2,7 +2,7 @@ name: KEXP John Richards Feed & Playlist
 
 on:
   schedule:
-    # Runs every 10 minutes (UTC). Script itself gates to 7–10am PT, Mon–Fri.
+    # Runs every 10 minutes (UTC). Script itself gates to 7–10am PT, Mon–Fri, and emails once/day after 10:10am PT.
     - cron: "*/10 * * * *"
   workflow_dispatch: {}
 
@@ -33,31 +33,44 @@ jobs:
 
       - name: Run script
         env:
+          # Spotify
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
           SPOTIFY_PLAYLIST_ID: ${{ secrets.SPOTIFY_PLAYLIST_ID }}
 
-          # Backfill range (YYYY-MM-DD). Leave END empty = today (PT).
+          # Backfill window (YYYY-MM-DD). Leave END empty = today (PT).
           BACKFILL_START_DATE: "2025-01-01"
           BACKFILL_END_DATE: ""
-          FORCE_BACKFILL_ONCE: "0"   # set "1" ONLY to re-run backfill once
+          FORCE_BACKFILL_ONCE: "0"
 
-          # Optional toggles:
-          DO_SPOTIFY_ADDS: "1"       # set "0" to build RSS only (no playlist changes)
-          JR_DEBUG: "0"              # set "1" for extra logs during troubleshooting
-          JR_SKIP_HOST_CHECK: "0"    # set "1" to bypass host validation (debug only)
+          # Email
+          DO_EMAIL: "1"
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_SUBJECT_PREFIX: ${{ secrets.MAIL_SUBJECT_PREFIX }}
+
+          # Optional toggles
+          DO_SPOTIFY_ADDS: "1"   # set "0" to NOT touch the playlist (for testing)
+          JR_DEBUG: "0"          # set "1" for verbose logs
+          JR_SKIP_HOST_CHECK: "0"
 
         run: |
           python scripts/run.py
           echo "---- ls -l docs ----" && ls -l docs || true
-          echo "---- head -n 40 docs/feed.xml ----" && head -n 40 docs/feed.xml || true
           echo "---- tail -n 40 docs/feed.xml ----" && tail -n 40 docs/feed.xml || true
+          echo "---- today CSV ----" && ls -l data/daily || true
 
       - name: Ensure data directory and CSV exist (optional)
         run: |
           mkdir -p data
           [ -f data/not_found.csv ] || echo "timestamp_pt,artist,song,reason" > data/not_found.csv
+          mkdir -p docs
+          [ -f docs/.nojekyll ] || : > docs/.nojekyll
 
       - name: Commit & push if changed (existence-aware)
         run: |
@@ -67,15 +80,17 @@ jobs:
 
           # Stage files only if they exist
           [ -f docs/feed.xml ] && git add docs/feed.xml
+          [ -f docs/.nojekyll ] && git add docs/.nojekyll
           [ -f data/seen.json ] && git add data/seen.json
           [ -f data/not_found.csv ] && git add data/not_found.csv
+          git add data/daily || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          git commit -m "Update feed & playlist $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          git commit -m "Update feed & data $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           git push
 
       - name: Upload artifacts (feed & data snapshot)
@@ -86,4 +101,5 @@ jobs:
             docs/feed.xml
             data/seen.json
             data/not_found.csv
+            data/daily/
           if-no-files-found: ignore

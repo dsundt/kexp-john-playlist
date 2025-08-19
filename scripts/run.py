@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-import os, sys, json, time, re
+import os, sys, json, time, re, csv
 from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
 import requests
+import smtplib
+from email.message import EmailMessage
+from pathlib import Path
 
 # ---- Config ----
 FEED_PATH = "docs/feed.xml"         # Optional audit RSS (served by GitHub Pages if /docs is enabled)
 SEEN_PATH = "data/seen.json"        # persistent dedupe + flags
 LOG_NOT_FOUND = "data/not_found.csv"
+DAILY_DIR = "data/daily"            # per-day CSV of added tracks
 FEED_TITLE = "KEXP — John Richards — Spotify Matches"
 FEED_LINK = "https://www.kexp.org/schedule/"
 FEED_DESC = "Tracks played during The Morning Show (KEXP) matched on Spotify; also auto-added to the target playlist."
@@ -26,11 +30,20 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 
-# Backfill range controls
-# Start from 2025-01-01 up to "today" by default (PT), weekdays only (Mon–Fri), 7–10am PT.
+# Backfill range controls (weekdays, 7–10am PT)
 BACKFILL_START_DATE = os.getenv("BACKFILL_START_DATE", "2025-01-01")  # YYYY-MM-DD
-BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")                # YYYY-MM-DD (optional; empty = today PT)
+BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")                # YYYY-MM-DD (empty = today PT)
 FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"         # ignore 'done' flag for a single replay
+
+# Email controls
+DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"  # set to "0" to disable email
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+MAIL_FROM = os.getenv("MAIL_FROM", "")
+MAIL_TO = os.getenv("MAIL_TO", "")
+MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "KEXP — John")
 
 # Toggle adding to Spotify (1=yes, 0=no). Leave "1" to actually build the playlist.
 DO_SPOTIFY_ADDS = os.getenv("DO_SPOTIFY_ADDS", "1") == "1"
@@ -43,9 +56,11 @@ PT = ZoneInfo("America/Los_Angeles")
 
 # ---- Utilities ----
 def ensure_dirs():
-    os.makedirs(os.path.dirname(FEED_PATH), exist_ok=True)
-    os.makedirs(os.path.dirname(SEEN_PATH), exist_ok=True)
-    os.makedirs(os.path.dirname(LOG_NOT_FOUND), exist_ok=True)
+    for path in [FEED_PATH, SEEN_PATH, LOG_NOT_FOUND]:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+    os.makedirs(DAILY_DIR, exist_ok=True)
 
 def load_seen():
     if os.path.exists(SEEN_PATH):
@@ -113,6 +128,30 @@ def clean_title(s):
     s = re.sub(r"\s*\([^)]+\)\s*$", "", s)       # (Live), (Remix)
     s = re.sub(r"\s+-\s+Remaster(ed)?\s*\d*$", "", s, flags=re.I)
     return s.strip()
+
+# ---- Daily log helpers ----
+def daily_csv_path(day_pt: date) -> str:
+    return os.path.join(DAILY_DIR, f"{day_pt.isoformat()}.csv")
+
+def daily_log_append(day_pt: date, artist: str, song: str, track_url: str, track_id: str):
+    path = daily_csv_path(day_pt)
+    new_file = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(["time_pt", "artist", "song", "spotify_url", "spotify_id"])
+        w.writerow([datetime.now(PT).strftime("%H:%M:%S"), artist, song, track_url, track_id])
+
+def read_daily_rows(day_pt: date):
+    path = daily_csv_path(day_pt)
+    if not os.path.exists(path):
+        return []
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            rows.append(row)
+    return rows
 
 # ---- Spotify auth & calls ----
 def refresh_access_token():
@@ -190,6 +229,7 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
 
     track_ids_to_add = []
     added_feed = 0
+    today_pt = datetime.now(PT).date()
 
     for p in plays:
         if p.get("play_type") != "trackplay":
@@ -235,6 +275,9 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
         # Append to audit feed (optional but handy)
         append_feed_item(title=title, link=track_url, guid=track_id, pubdate_iso=pub_dt.isoformat())
         added_feed += 1
+
+        # Log to today's CSV
+        daily_log_append(today_pt, artist, song, track_url, track_id)
 
         track_ids_to_add.append(track_id)
         seen_keys.add(key)
@@ -309,6 +352,65 @@ def run_backfill_if_needed(token, seen):
 
     return (total_feed, total_sp), True
 
+# ---- Email ----
+def send_daily_email_if_needed(seen):
+    """Send today's summary email once after 10:10am PT if there were adds."""
+    if not DO_EMAIL:
+        return False, "Email disabled"
+
+    # Basic SMTP config check
+    required = [SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM, MAIL_TO]
+    if any(not x for x in required):
+        return False, "Missing SMTP secrets"
+
+    now_pt = datetime.now(PT)
+    # Only send on weekdays, after show window
+    if now_pt.weekday() >= 5 or (now_pt.hour < 10 or (now_pt.hour == 10 and now_pt.minute < 10)):
+        return False, "Too early or weekend"
+
+    key = f"email_sent_{now_pt.date().isoformat()}"
+    if seen.get("flags", {}).get(key):
+        return False, "Already sent today"
+
+    rows = read_daily_rows(now_pt.date())
+    if not rows:
+        return False, "No rows for today"
+
+    # Build email
+    subject = f"{MAIL_SUBJECT_PREFIX} — {now_pt.date().isoformat()} ({len(rows)} track{'s' if len(rows)!=1 else ''})"
+    lines = []
+    for r in rows:
+        lines.append(f"- {r['artist']} — {r['song']}  ({r['spotify_url']})")
+    body = (
+        f"John Richards — KEXP Morning Show (7–10am PT)\n"
+        f"Date: {now_pt.date().isoformat()}\n"
+        f"Tracks added: {len(rows)}\n\n" + "\n".join(lines) +
+        "\n\n–––\nThis email was sent by your GitHub Action."
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = MAIL_FROM
+    msg["To"] = MAIL_TO
+    msg.set_content(body)
+
+    # Try TLS (port 587)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+        s.ehlo()
+        try:
+            s.starttls()
+            s.ehlo()
+        except Exception:
+            # Some providers auto-TLS; proceed
+            pass
+        s.login(SMTP_USERNAME, SMTP_PASSWORD)
+        s.send_message(msg)
+
+    # Mark as sent
+    seen.setdefault("flags", {})[key] = True
+    save_seen(seen)
+    return True, "Sent"
+
 # ---- Live polling ----
 def run_live(token, seen):
     """Rolling 12-minute window polling."""
@@ -324,6 +426,7 @@ def run_live(token, seen):
 
 # ---- Main ----
 def main():
+    # Secrets sanity
     for name, val in [
         ("SPOTIFY_CLIENT_ID", CLIENT_ID),
         ("SPOTIFY_CLIENT_SECRET", CLIENT_SECRET),
@@ -348,6 +451,10 @@ def main():
     # Live/rolling updates
     live_feed, live_sp = run_live(token, load_seen())  # reload in case backfill updated it
     print(f"Live window added → Feed: {live_feed}, Playlist: {live_sp}")
+
+    # Email summary once per day after the show window
+    sent, reason = send_daily_email_if_needed(load_seen())
+    print(f"Email status: {sent} ({reason})")
 
 if __name__ == "__main__":
     main()

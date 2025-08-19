@@ -55,10 +55,10 @@ jobs:
           MAIL_SUBJECT_PREFIX: ${{ secrets.MAIL_SUBJECT_PREFIX }}
 
           # Optional toggles
-          DO_SPOTIFY_ADDS: "0"   # set "0" to NOT touch the playlist (for testing)
+          DO_SPOTIFY_ADDS: "1"   # set "0" to NOT touch the playlist (for testing)
           JR_DEBUG: "0"          # set "1" for verbose logs
           JR_SKIP_HOST_CHECK: "0"
-          EMAIL_TEST_MODE: "1"
+          EMAIL_TEST_MODE: "0"
 
         run: |
           python scripts/run.py

@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 import requests
 import smtplib
 from email.message import EmailMessage
-from pathlib import Path
 
 # ---- Config ----
 FEED_PATH = "docs/feed.xml"         # Optional audit RSS (served by GitHub Pages if /docs is enabled)
@@ -45,6 +44,10 @@ MAIL_FROM = os.getenv("MAIL_FROM", "")
 MAIL_TO = os.getenv("MAIL_TO", "")
 MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "KEXP — John")
 
+# >>> Path B test override <<<
+# When EMAIL_TEST_MODE=1, time/day gating is ignored and re-sending is allowed.
+EMAIL_TEST_MODE = os.getenv("EMAIL_TEST_MODE", "0") == "1"
+
 # Toggle adding to Spotify (1=yes, 0=no). Leave "1" to actually build the playlist.
 DO_SPOTIFY_ADDS = os.getenv("DO_SPOTIFY_ADDS", "1") == "1"
 
@@ -56,8 +59,8 @@ PT = ZoneInfo("America/Los_Angeles")
 
 # ---- Utilities ----
 def ensure_dirs():
-    for path in [FEED_PATH, SEEN_PATH, LOG_NOT_FOUND]:
-        parent = os.path.dirname(path)
+    for p in [FEED_PATH, SEEN_PATH, LOG_NOT_FOUND]:
+        parent = os.path.dirname(p)
         if parent:
             os.makedirs(parent, exist_ok=True)
     os.makedirs(DAILY_DIR, exist_ok=True)
@@ -354,7 +357,7 @@ def run_backfill_if_needed(token, seen):
 
 # ---- Email ----
 def send_daily_email_if_needed(seen):
-    """Send today's summary email once after 10:10am PT if there were adds."""
+    """Send today's summary email (or test email in EMAIL_TEST_MODE)."""
     if not DO_EMAIL:
         return False, "Email disabled"
 
@@ -364,28 +367,43 @@ def send_daily_email_if_needed(seen):
         return False, "Missing SMTP secrets"
 
     now_pt = datetime.now(PT)
-    # Only send on weekdays, after show window
-    if now_pt.weekday() >= 5 or (now_pt.hour < 10 or (now_pt.hour == 10 and now_pt.minute < 10)):
-        return False, "Too early or weekend"
+
+    # Time/day gating (skip when in test mode)
+    if not EMAIL_TEST_MODE:
+        # Only send on weekdays, after 10:10am PT
+        if now_pt.weekday() >= 5 or (now_pt.hour < 10 or (now_pt.hour == 10 and now_pt.minute < 10)):
+            return False, "Too early or weekend"
 
     key = f"email_sent_{now_pt.date().isoformat()}"
-    if seen.get("flags", {}).get(key):
+    # Allow re-sending in test mode
+    if seen.get("flags", {}).get(key) and not EMAIL_TEST_MODE:
         return False, "Already sent today"
 
     rows = read_daily_rows(now_pt.date())
-    if not rows:
+
+    # In test mode, allow sending even with no rows (to validate SMTP)
+    if not rows and not EMAIL_TEST_MODE:
         return False, "No rows for today"
 
-    # Build email
-    subject = f"{MAIL_SUBJECT_PREFIX} — {now_pt.date().isoformat()} ({len(rows)} track{'s' if len(rows)!=1 else ''})"
-    lines = []
-    for r in rows:
-        lines.append(f"- {r['artist']} — {r['song']}  ({r['spotify_url']})")
+    subject_base = f"{MAIL_SUBJECT_PREFIX} — {now_pt.date().isoformat()}"
+    if EMAIL_TEST_MODE:
+        subject = f"[TEST] {subject_base} ({len(rows)} track{'s' if len(rows)!=1 else ''})"
+    else:
+        subject = f"{subject_base} ({len(rows)} track{'s' if len(rows)!=1 else ''})"
+
+    # Build body
+    if rows:
+        lines = [f"- {r['artist']} — {r['song']}  ({r['spotify_url']})" for r in rows]
+        list_block = "\n".join(lines)
+    else:
+        list_block = "(No tracks logged; test email to verify SMTP settings.)"
+
     body = (
         f"John Richards — KEXP Morning Show (7–10am PT)\n"
         f"Date: {now_pt.date().isoformat()}\n"
-        f"Tracks added: {len(rows)}\n\n" + "\n".join(lines) +
-        "\n\n–––\nThis email was sent by your GitHub Action."
+        f"Tracks added: {len(rows)}\n\n{list_block}\n\n"
+        f"–––\nThis email was sent by your GitHub Action."
+        + (" (EMAIL_TEST_MODE=1)" if EMAIL_TEST_MODE else "")
     )
 
     msg = EmailMessage()
@@ -401,14 +419,15 @@ def send_daily_email_if_needed(seen):
             s.starttls()
             s.ehlo()
         except Exception:
-            # Some providers auto-TLS; proceed
             pass
         s.login(SMTP_USERNAME, SMTP_PASSWORD)
         s.send_message(msg)
 
-    # Mark as sent
-    seen.setdefault("flags", {})[key] = True
-    save_seen(seen)
+    # Mark sent (but keep re-sending allowed in test mode)
+    if not EMAIL_TEST_MODE:
+        seen.setdefault("flags", {})[key] = True
+        save_seen(seen)
+
     return True, "Sent"
 
 # ---- Live polling ----
@@ -452,7 +471,7 @@ def main():
     live_feed, live_sp = run_live(token, load_seen())  # reload in case backfill updated it
     print(f"Live window added → Feed: {live_feed}, Playlist: {live_sp}")
 
-    # Email summary once per day after the show window
+    # Email summary (or test email)
     sent, reason = send_daily_email_if_needed(load_seen())
     print(f"Email status: {sent} ({reason})")
 

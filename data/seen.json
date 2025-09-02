@@ -3299,6 +3299,7 @@
   "flags": {
     "backfill_done_range": true,
     "backfill_last_start": "2025-01-01",
-    "backfill_last_end": "2025-08-15"
+    "backfill_last_end": "2025-08-15",
+    "email_sent_2025-09-02": true
   }
 }

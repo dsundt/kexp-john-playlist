@@ -23,8 +23,8 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 SPOTIFY_ADD_URL_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
 SPOTIFY_GET_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"     # GET (limit, offset)
-SPOTIFY_PUT_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"     # PUT (replace)
-SPOTIFY_POST_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"    # POST (append)
+SPOTIFY_PUT_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"     # PUT (replace first 100)
+SPOTIFY_POST_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"    # POST (append batches)
 
 # Secrets / env
 CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -34,11 +34,11 @@ PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 
 # Backfill range controls (weekdays, 7–10am PT)
 BACKFILL_START_DATE = os.getenv("BACKFILL_START_DATE", "2025-01-01")  # YYYY-MM-DD
-BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")                # YYYY-MM-DD (empty = today PT)
-FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"         # ignore 'done' flag for a single replay
+BACKFILL_END_DATE   = os.getenv("BACKFILL_END_DATE", "")               # YYYY-MM-DD (empty = today PT)
+FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"
 
 # Email controls
-DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"  # set to "0" to disable email
+DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
@@ -48,12 +48,17 @@ MAIL_TO = os.getenv("MAIL_TO", "")
 MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "KEXP — John")
 
 # Reorder controls
-DO_REORDER = os.getenv("DO_REORDER", "1") == "1"     # turn daily reorder on/off
-REORDER_AFTER_HOUR_PT = int(os.getenv("REORDER_AFTER_HOUR_PT", "10"))  # default 10:20 PT
-REORDER_AFTER_MIN_PT = int(os.getenv("REORDER_AFTER_MIN_PT", "20"))
+DO_REORDER = os.getenv("DO_REORDER", "1") == "1"     # run daily year-sort reorder
+REORDER_AFTER_HOUR_PT = int(os.getenv("REORDER_AFTER_HOUR_PT", "10"))  # default 10:20
+REORDER_AFTER_MIN_PT  = int(os.getenv("REORDER_AFTER_MIN_PT", "20"))
+
+# Dedupe controls (daily review)
+DO_DEDUPE = os.getenv("DO_DEDUPE", "1") == "1"       # run daily dup review
+DEDUPE_AFTER_HOUR_PT = int(os.getenv("DEDUPE_AFTER_HOUR_PT", "10"))    # default 10:25
+DEDUPE_AFTER_MIN_PT  = int(os.getenv("DEDUPE_AFTER_MIN_PT", "25"))
 
 # Test toggles
-EMAIL_TEST_MODE = os.getenv("EMAIL_TEST_MODE", "0") == "1"  # allows test email any time
+EMAIL_TEST_MODE = os.getenv("EMAIL_TEST_MODE", "0") == "1"
 
 # Behavior toggles
 DO_SPOTIFY_ADDS = os.getenv("DO_SPOTIFY_ADDS", "1") == "1"
@@ -417,8 +422,7 @@ def send_daily_email_if_needed(seen):
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
         s.ehlo()
         try:
-            s.starttls()
-            s.ehlo()
+            s.starttls(); s.ehlo()
         except Exception:
             pass
         s.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -430,7 +434,7 @@ def send_daily_email_if_needed(seen):
 
     return True, "Sent"
 
-# ---- Reorder (by release year) ----
+# ---- Playlist helpers (read/replace) ----
 def _safe_year_from_release_date(date_str: str) -> int:
     """
     Spotify album.release_date can be 'YYYY', 'YYYY-MM', or 'YYYY-MM-DD'.
@@ -445,7 +449,7 @@ def _safe_year_from_release_date(date_str: str) -> int:
 
 def fetch_all_playlist_tracks(token, playlist_id):
     """
-    Return list of dicts: {uri, id, artist, name, album_release_date}
+    Return list of dicts: {uri, id, name, artist, album, album_release_date}
     """
     items = []
     url = SPOTIFY_GET_PL_ITEMS_TPL.format(playlist_id=playlist_id)
@@ -462,12 +466,14 @@ def fetch_all_playlist_tracks(token, playlist_id):
             tr = it.get("track") or {}
             if not tr:
                 continue
+            album = (tr.get("album") or {})
             items.append({
                 "uri": tr.get("uri"),
                 "id": tr.get("id"),
                 "name": tr.get("name"),
                 "artist": ", ".join([a.get("name","") for a in (tr.get("artists") or [])]),
-                "album_release_date": (tr.get("album") or {}).get("release_date") or "",
+                "album": album.get("name") or "",
+                "album_release_date": album.get("release_date") or "",
             })
         if data.get("next"):
             offset += limit
@@ -502,6 +508,7 @@ def replace_playlist_with_order(token, playlist_id, ordered_uris):
             rr = requests.post(url_post, headers=headers, json={"uris": batch}, timeout=30)
         rr.raise_for_status()
 
+# ---- Reorder (by release year with stronger tie-breaks + built-in de-dupe) ----
 def reorder_playlist_by_release_year_if_needed(token, seen):
     if not DO_REORDER:
         return False, "Reorder disabled"
@@ -528,27 +535,91 @@ def reorder_playlist_by_release_year_if_needed(token, seen):
         save_seen(seen)
         return False, "No items"
 
-    # Build sortable tuples (year, artist, name, uri). Unknown year -> 9999 (goes to end)
+    # Sort by: year asc → album asc → artist asc → track asc (case-insensitive)
     sortable = []
     for it in items:
-        y = _safe_year_from_release_date(it.get("album_release_date"))
-        sortable.append((y, (it.get("artist") or "").lower(), (it.get("name") or "").lower(), it.get("uri")))
+        year = _safe_year_from_release_date(it.get("album_release_date"))
+        album = (it.get("album") or "").lower()
+        artist = (it.get("artist") or "").lower()
+        name = (it.get("name") or "").lower()
+        sortable.append((year, album, artist, name, it["uri"], it["id"]))
 
-    sortable.sort(key=lambda t: (t[0], t[1], t[2]))  # year asc, then artist, then name
-    ordered_uris = [t[3] for t in sortable]
+    sortable.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
 
+    # De-dupe during reorder: keep first occurrence of each track id in the sorted list
+    seen_ids = set()
+    ordered_uris = []
+    for (_, _, _, _, uri, tid) in sortable:
+        if not tid or tid in seen_ids:
+            continue
+        seen_ids.add(tid)
+        ordered_uris.append(uri)
+
+    # Compare with current order
     current_uris = [it["uri"] for it in items]
     if ordered_uris == current_uris:
         seen.setdefault("flags", {})[key] = True
         save_seen(seen)
-        return False, "Already in year order"
+        return False, "Already in year order (no dups)"
 
-    # Replace playlist with ordered URIs
+    # Replace playlist with de-duped, ordered URIs
     replace_playlist_with_order(token, PLAYLIST_ID, ordered_uris)
 
     seen.setdefault("flags", {})[key] = True
     save_seen(seen)
-    return True, f"Reordered {len(ordered_uris)} items by release year"
+    return True, f"Reordered {len(ordered_uris)} items by year/album/artist/track (deduped)"
+
+# ---- Daily duplicate review (remove any dupes, preserve current order) ----
+def remove_duplicates_if_needed(token, seen):
+    if not DO_DEDUPE:
+        return False, "Dedupe disabled"
+
+    now_pt = datetime.now(PT)
+    # Weekdays only, after the show—default 10:25 PT
+    if now_pt.weekday() >= 5:
+        return False, "Weekend"
+    if (now_pt.hour < DEDUPE_AFTER_HOUR_PT) or \
+       (now_pt.hour == DEDUPE_AFTER_HOUR_PT and now_pt.minute < DEDUPE_AFTER_MIN_PT):
+        return False, "Too early"
+
+    key = f"dedupe_done_{now_pt.date().isoformat()}"
+    if seen.get("flags", {}).get(key):
+        return False, "Already deduped today"
+
+    items = fetch_all_playlist_tracks(token, PLAYLIST_ID)
+    if not items:
+        seen.setdefault("flags", {})[key] = True
+        save_seen(seen)
+        return False, "No items"
+
+    uris = [it["uri"] for it in items]
+    ids  = [it["id"]  for it in items]
+
+    seen_ids = set()
+    unique_uris = []
+    dup_count = 0
+    for uri, tid in zip(uris, ids):
+        if not tid:
+            # Keep items with missing IDs (very rare), treat as unique per position
+            unique_uris.append(uri)
+            continue
+        if tid in seen_ids:
+            dup_count += 1
+            continue
+        seen_ids.add(tid)
+        unique_uris.append(uri)
+
+    if dup_count == 0:
+        seen.setdefault("flags", {})[key] = True
+        save_seen(seen)
+        return False, "No duplicates found"
+
+    # Replace playlist with order-preserving unique URIs
+    replace_playlist_with_order(token, PLAYLIST_ID, unique_uris)
+
+    seen.setdefault("flags", {})[key] = True
+    save_seen(seen)
+    return True, f"Removed {dup_count} duplicate track(s)"
 
 # ---- Live polling ----
 def run_live(token, seen):
@@ -591,13 +662,17 @@ def main():
     live_feed, live_sp = run_live(token, load_seen())  # reload in case backfill updated it
     print(f"Live window added → Feed: {live_feed}, Playlist: {live_sp}")
 
-    # Email summary (after 10:10 PT or anytime in test mode)
+    # Daily email (after 10:10 PT or test-mode)
     sent, reason = send_daily_email_if_needed(load_seen())
     print(f"Email status: {sent} ({reason})")
 
     # Daily reorder (after 10:20 PT)
     changed, why = reorder_playlist_by_release_year_if_needed(token, load_seen())
     print(f"Reorder status: {changed} ({why})")
+
+    # Daily duplicate review (after 10:25 PT)
+    deduped, why2 = remove_duplicates_if_needed(token, load_seen())
+    print(f"Dedupe status: {deduped} ({why2})")
 
 if __name__ == "__main__":
     main()

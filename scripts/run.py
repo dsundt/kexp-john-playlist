@@ -32,13 +32,13 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 
-# Backfill range controls
-BACKFILL_START_DATE = os.getenv("BACKFILL_START_DATE", "2025-01-01")
-BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")
-FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"
+# Backfill range controls (weekdays, 7–10am PT)
+BACKFILL_START_DATE = os.getenv("BACKFILL_START_DATE", "2025-01-01")  # YYYY-MM-DD
+BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")                # YYYY-MM-DD (empty = today PT)
+FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"         # ignore 'done' flag for a single replay
 
 # Email controls
-DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"
+DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"  # set to "0" to disable email
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
@@ -133,7 +133,7 @@ def append_feed_item(title, link, guid, pubdate_iso):
 def clean_title(s):
     if not s: return s
     s = re.sub(r"\s*\[[^\]]+\]\s*$", "", s)
-    s = re.sub(r"\s*\([^)]+\)\s*$", "", s)
+    s = re.sub(r"\s*\([^)]+\)\s*$", "", s)       # (Live), (Remix)
     s = re.sub(r"\s+-\s+Remaster(ed)?\s*\d*$", "", s, flags=re.I)
     return s.strip()
 
@@ -177,6 +177,7 @@ def spotify_search_track(token, artist, song):
     return items[0] if items else None
 
 def spotify_add_tracks(token, playlist_id, track_ids):
+    """Add up to 100 tracks per call. track_ids are raw IDs; converted to URIs here."""
     if not DO_SPOTIFY_ADDS or not track_ids:
         return
     uris = [f"spotify:track:{tid}" for tid in track_ids]
@@ -255,6 +256,7 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
         if key in seen_keys:
             continue
 
+        # Spotify lookup (single retry for 429)
         try:
             tr = spotify_search_track(token, artist, song)
         except requests.HTTPError as e:
@@ -270,7 +272,7 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
 
         if not tr:
             log_not_found(artist, song, "not_found")
-            seen_keys.add(key)
+            seen_keys.add(key)  # optional: avoid retrying forever
             continue
 
         track_id = tr["id"]
@@ -278,13 +280,17 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
         title = f"{artist} — {song}"
         pub_dt = datetime.fromisoformat(p["airdate"])
 
+        # Append to audit feed
         append_feed_item(title=title, link=track_url, guid=track_id, pubdate_iso=pub_dt.isoformat())
         added_feed += 1
 
+        # Log to today's CSV
         daily_log_append(today_pt, artist, song, track_url, track_id)
+
         track_ids_to_add.append(track_id)
         seen_keys.add(key)
 
+    # Batch add to Spotify (100 per call)
     for i in range(0, len(track_ids_to_add), 100):
         batch = track_ids_to_add[i:i+100]
         if batch:
@@ -299,6 +305,7 @@ def parse_date_ymd(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 def iter_weekdays_range(start_d: date, end_d: date):
+    """Yield all weekdays (Mon–Fri) from start_d..end_d inclusive."""
     d = start_d
     while d <= end_d:
         if d.weekday() < 5:
@@ -306,6 +313,7 @@ def iter_weekdays_range(start_d: date, end_d: date):
         d = d + timedelta(days=1)
 
 def run_range_backfill(token, seen, start_str: str, end_str: str):
+    """Backfill weekdays 7–10am PT from start_str..end_str inclusive, oldest→newest."""
     today_pt = datetime.now(PT).date()
     start_d = parse_date_ymd(start_str)
     end_d = parse_date_ymd(end_str) if end_str else today_pt
@@ -326,7 +334,7 @@ def run_range_backfill(token, seen, start_str: str, end_str: str):
         added_feed, added_sp = process_window(token, start_pt, end_pt, seen_keys)
         total_feed += added_feed
         total_sp += added_sp
-        time.sleep(0.5)
+        time.sleep(0.5)  # be gentle between days
 
     if seen.get("keys") != sorted(seen_keys):
         seen["keys"] = sorted(seen_keys)
@@ -335,12 +343,13 @@ def run_range_backfill(token, seen, start_str: str, end_str: str):
     return (total_feed, total_sp)
 
 def run_backfill_if_needed(token, seen):
+    """Run the 2025→today backfill once (or when forced)."""
     done = seen.get("flags", {}).get("backfill_done_range", False)
     if done and not FORCE_BACKFILL_ONCE:
         return (0, 0), False
 
     start_str = BACKFILL_START_DATE or "2025-01-01"
-    end_str = BACKFILL_END_DATE or ""
+    end_str = BACKFILL_END_DATE or ""  # empty = today
 
     total_feed, total_sp = run_range_backfill(token, seen, start_str, end_str)
 
@@ -353,22 +362,31 @@ def run_backfill_if_needed(token, seen):
 
 # ---- Email ----
 def send_daily_email_if_needed(seen):
+    """Send today's summary email (or test email in EMAIL_TEST_MODE)."""
     if not DO_EMAIL:
         return False, "Email disabled"
+
+    # Basic SMTP config check
     required = [SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM, MAIL_TO]
     if any(not x for x in required):
         return False, "Missing SMTP secrets"
 
     now_pt = datetime.now(PT)
+
+    # Time/day gating (skip when in test mode)
     if not EMAIL_TEST_MODE:
+        # Only send on weekdays, after 10:10am PT
         if now_pt.weekday() >= 5 or (now_pt.hour < 10 or (now_pt.hour == 10 and now_pt.minute < 10)):
             return False, "Too early or weekend"
 
     key = f"email_sent_{now_pt.date().isoformat()}"
+    # Allow re-sending in test mode
     if seen.get("flags", {}).get(key) and not EMAIL_TEST_MODE:
         return False, "Already sent today"
 
     rows = read_daily_rows(now_pt.date())
+
+    # In test mode, allow sending even with no rows (to validate SMTP)
     if not rows and not EMAIL_TEST_MODE:
         return False, "No rows for today"
 
@@ -395,10 +413,12 @@ def send_daily_email_if_needed(seen):
     msg["To"] = MAIL_TO
     msg.set_content(body)
 
+    # Try TLS (port 587)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
         s.ehlo()
         try:
-            s.starttls(); s.ehlo()
+            s.starttls()
+            s.ehlo()
         except Exception:
             pass
         s.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -532,6 +552,7 @@ def reorder_playlist_by_release_year_if_needed(token, seen):
 
 # ---- Live polling ----
 def run_live(token, seen):
+    """Rolling 12-minute window polling."""
     now_pt = datetime.now(PT)
     end_pt = now_pt
     start_pt = now_pt - timedelta(minutes=ROLLING_WINDOW_MINUTES)
@@ -544,6 +565,7 @@ def run_live(token, seen):
 
 # ---- Main ----
 def main():
+    # Secrets sanity
     for name, val in [
         ("SPOTIFY_CLIENT_ID", CLIENT_ID),
         ("SPOTIFY_CLIENT_SECRET", CLIENT_SECRET),
@@ -560,25 +582,20 @@ def main():
     seen = load_seen()
     token = refresh_access_token()
 
-    # Backfill once (2025-01-01 → today)
+    # Full-range backfill (2025-01-01 → today), one-time unless forced
     (bf_feed, bf_sp), did_bf = run_backfill_if_needed(token, seen)
     if did_bf:
         print(f"Backfill 2025→today complete. Feed+Playlist added: {bf_feed}/{bf_sp}")
 
     # Live/rolling updates
-    live_feed, live_sp = run_live(token, load_seen())
+    live_feed, live_sp = run_live(token, load_seen())  # reload in case backfill updated it
     print(f"Live window added → Feed: {live_feed}, Playlist: {live_sp}")
 
-    # Daily email after the show window
+    # Email summary (after 10:10 PT or anytime in test mode)
     sent, reason = send_daily_email_if_needed(load_seen())
     print(f"Email status: {sent} ({reason})")
 
-    # Daily reorder after show window
-    try:
-        changed, why = reorder_playlist_by_release_year_if_needed(load_seen(), load_seen())  # seen passed twice? No, needs token
-    except TypeError:
-        # Fix incorrect call above if copy/paste — correct is:
-        pass
+    # Daily reorder (after 10:20 PT)
     changed, why = reorder_playlist_by_release_year_if_needed(token, load_seen())
     print(f"Reorder status: {changed} ({why})")
 

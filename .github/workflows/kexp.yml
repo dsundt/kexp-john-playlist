@@ -60,10 +60,15 @@ jobs:
           JR_SKIP_HOST_CHECK: "0"
           EMAIL_TEST_MODE: "0"
 
-           # Reorder controls
+          # Reorder controls
           DO_REORDER: "1"             # set "0" to disable daily reorder
           REORDER_AFTER_HOUR_PT: "10" # reorder once after 10:20 AM PT
           REORDER_AFTER_MIN_PT: "20"
+
+          # Duplicate review controls
+          DO_DEDUPE: "1"              # set "0" to skip daily duplicate removal
+          DEDUPE_AFTER_HOUR_PT: "10"  # run after 10:25 AM PT
+          DEDUPE_AFTER_MIN_PT: "25"
 
         run: |
           python scripts/run.py

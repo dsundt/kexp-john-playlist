@@ -3312,6 +3312,7 @@
     "backfill_last_start": "2025-01-01",
     "backfill_last_end": "2025-08-15",
     "email_sent_2025-09-02": true,
-    "email_sent_2025-09-03": true
+    "email_sent_2025-09-03": true,
+    "reorder_done_2025-09-03": true
   }
 }

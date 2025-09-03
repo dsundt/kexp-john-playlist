@@ -7,21 +7,24 @@ import smtplib
 from email.message import EmailMessage
 
 # ---- Config ----
-FEED_PATH = "docs/feed.xml"         # Optional audit RSS (served by GitHub Pages if /docs is enabled)
-SEEN_PATH = "data/seen.json"        # persistent dedupe + flags
+FEED_PATH = "docs/feed.xml"
+SEEN_PATH = "data/seen.json"
 LOG_NOT_FOUND = "data/not_found.csv"
-DAILY_DIR = "data/daily"            # per-day CSV of added tracks
+DAILY_DIR = "data/daily"
 FEED_TITLE = "KEXP — John Richards — Spotify Matches"
 FEED_LINK = "https://www.kexp.org/schedule/"
 FEED_DESC = "Tracks played during The Morning Show (KEXP) matched on Spotify; also auto-added to the target playlist."
 KEXP_PLAYS_URL = "https://api.kexp.org/v2/plays/"
-HOST_ID_JOHN = 26                   # John Richards
-ROLLING_WINDOW_MINUTES = 12         # live/polling window, Action runs every 10 min
+HOST_ID_JOHN = 26
+ROLLING_WINDOW_MINUTES = 12
 
 # Spotify OAuth (user)
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 SPOTIFY_ADD_URL_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+SPOTIFY_GET_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"     # GET (limit, offset)
+SPOTIFY_PUT_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"     # PUT (replace)
+SPOTIFY_POST_PL_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"    # POST (append)
 
 # Secrets / env
 CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -29,13 +32,13 @@ CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 
-# Backfill range controls (weekdays, 7–10am PT)
-BACKFILL_START_DATE = os.getenv("BACKFILL_START_DATE", "2025-01-01")  # YYYY-MM-DD
-BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")                # YYYY-MM-DD (empty = today PT)
-FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"         # ignore 'done' flag for a single replay
+# Backfill range controls
+BACKFILL_START_DATE = os.getenv("BACKFILL_START_DATE", "2025-01-01")
+BACKFILL_END_DATE = os.getenv("BACKFILL_END_DATE", "")
+FORCE_BACKFILL_ONCE = os.getenv("FORCE_BACKFILL_ONCE") == "1"
 
 # Email controls
-DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"  # set to "0" to disable email
+DO_EMAIL = os.getenv("DO_EMAIL", "1") == "1"
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
@@ -44,14 +47,16 @@ MAIL_FROM = os.getenv("MAIL_FROM", "")
 MAIL_TO = os.getenv("MAIL_TO", "")
 MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "KEXP — John")
 
-# >>> Path B test override <<<
-# When EMAIL_TEST_MODE=1, time/day gating is ignored and re-sending is allowed.
-EMAIL_TEST_MODE = os.getenv("EMAIL_TEST_MODE", "0") == "1"
+# Reorder controls
+DO_REORDER = os.getenv("DO_REORDER", "1") == "1"     # turn daily reorder on/off
+REORDER_AFTER_HOUR_PT = int(os.getenv("REORDER_AFTER_HOUR_PT", "10"))  # default 10:20 PT
+REORDER_AFTER_MIN_PT = int(os.getenv("REORDER_AFTER_MIN_PT", "20"))
 
-# Toggle adding to Spotify (1=yes, 0=no). Leave "1" to actually build the playlist.
+# Test toggles
+EMAIL_TEST_MODE = os.getenv("EMAIL_TEST_MODE", "0") == "1"  # allows test email any time
+
+# Behavior toggles
 DO_SPOTIFY_ADDS = os.getenv("DO_SPOTIFY_ADDS", "1") == "1"
-
-# Debug toggles (optional)
 JR_DEBUG = os.getenv("JR_DEBUG") == "1"
 JR_SKIP_HOST_CHECK = os.getenv("JR_SKIP_HOST_CHECK") == "1"
 
@@ -128,7 +133,7 @@ def append_feed_item(title, link, guid, pubdate_iso):
 def clean_title(s):
     if not s: return s
     s = re.sub(r"\s*\[[^\]]+\]\s*$", "", s)
-    s = re.sub(r"\s*\([^)]+\)\s*$", "", s)       # (Live), (Remix)
+    s = re.sub(r"\s*\([^)]+\)\s*$", "", s)
     s = re.sub(r"\s+-\s+Remaster(ed)?\s*\d*$", "", s, flags=re.I)
     return s.strip()
 
@@ -172,7 +177,6 @@ def spotify_search_track(token, artist, song):
     return items[0] if items else None
 
 def spotify_add_tracks(token, playlist_id, track_ids):
-    """Add up to 100 tracks per call. track_ids are raw IDs; converted to URIs here."""
     if not DO_SPOTIFY_ADDS or not track_ids:
         return
     uris = [f"spotify:track:{tid}" for tid in track_ids]
@@ -251,7 +255,6 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
         if key in seen_keys:
             continue
 
-        # Spotify lookup (single retry for 429)
         try:
             tr = spotify_search_track(token, artist, song)
         except requests.HTTPError as e:
@@ -267,7 +270,7 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
 
         if not tr:
             log_not_found(artist, song, "not_found")
-            seen_keys.add(key)  # optional: avoid retrying forever
+            seen_keys.add(key)
             continue
 
         track_id = tr["id"]
@@ -275,17 +278,13 @@ def process_window(token, start_pt: datetime, end_pt: datetime, seen_keys: set):
         title = f"{artist} — {song}"
         pub_dt = datetime.fromisoformat(p["airdate"])
 
-        # Append to audit feed (optional but handy)
         append_feed_item(title=title, link=track_url, guid=track_id, pubdate_iso=pub_dt.isoformat())
         added_feed += 1
 
-        # Log to today's CSV
         daily_log_append(today_pt, artist, song, track_url, track_id)
-
         track_ids_to_add.append(track_id)
         seen_keys.add(key)
 
-    # Batch add to Spotify (100 per call)
     for i in range(0, len(track_ids_to_add), 100):
         batch = track_ids_to_add[i:i+100]
         if batch:
@@ -300,7 +299,6 @@ def parse_date_ymd(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 def iter_weekdays_range(start_d: date, end_d: date):
-    """Yield all weekdays (Mon–Fri) from start_d..end_d inclusive."""
     d = start_d
     while d <= end_d:
         if d.weekday() < 5:
@@ -308,7 +306,6 @@ def iter_weekdays_range(start_d: date, end_d: date):
         d = d + timedelta(days=1)
 
 def run_range_backfill(token, seen, start_str: str, end_str: str):
-    """Backfill weekdays 7–10am PT from start_str..end_str inclusive, oldest→newest."""
     today_pt = datetime.now(PT).date()
     start_d = parse_date_ymd(start_str)
     end_d = parse_date_ymd(end_str) if end_str else today_pt
@@ -329,7 +326,7 @@ def run_range_backfill(token, seen, start_str: str, end_str: str):
         added_feed, added_sp = process_window(token, start_pt, end_pt, seen_keys)
         total_feed += added_feed
         total_sp += added_sp
-        time.sleep(0.5)  # be gentle between days
+        time.sleep(0.5)
 
     if seen.get("keys") != sorted(seen_keys):
         seen["keys"] = sorted(seen_keys)
@@ -338,13 +335,12 @@ def run_range_backfill(token, seen, start_str: str, end_str: str):
     return (total_feed, total_sp)
 
 def run_backfill_if_needed(token, seen):
-    """Run the 2025→today backfill once (or when forced)."""
     done = seen.get("flags", {}).get("backfill_done_range", False)
     if done and not FORCE_BACKFILL_ONCE:
         return (0, 0), False
 
     start_str = BACKFILL_START_DATE or "2025-01-01"
-    end_str = BACKFILL_END_DATE or ""  # empty = today
+    end_str = BACKFILL_END_DATE or ""
 
     total_feed, total_sp = run_range_backfill(token, seen, start_str, end_str)
 
@@ -357,41 +353,28 @@ def run_backfill_if_needed(token, seen):
 
 # ---- Email ----
 def send_daily_email_if_needed(seen):
-    """Send today's summary email (or test email in EMAIL_TEST_MODE)."""
     if not DO_EMAIL:
         return False, "Email disabled"
-
-    # Basic SMTP config check
     required = [SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM, MAIL_TO]
     if any(not x for x in required):
         return False, "Missing SMTP secrets"
 
     now_pt = datetime.now(PT)
-
-    # Time/day gating (skip when in test mode)
     if not EMAIL_TEST_MODE:
-        # Only send on weekdays, after 10:10am PT
         if now_pt.weekday() >= 5 or (now_pt.hour < 10 or (now_pt.hour == 10 and now_pt.minute < 10)):
             return False, "Too early or weekend"
 
     key = f"email_sent_{now_pt.date().isoformat()}"
-    # Allow re-sending in test mode
     if seen.get("flags", {}).get(key) and not EMAIL_TEST_MODE:
         return False, "Already sent today"
 
     rows = read_daily_rows(now_pt.date())
-
-    # In test mode, allow sending even with no rows (to validate SMTP)
     if not rows and not EMAIL_TEST_MODE:
         return False, "No rows for today"
 
     subject_base = f"{MAIL_SUBJECT_PREFIX} — {now_pt.date().isoformat()}"
-    if EMAIL_TEST_MODE:
-        subject = f"[TEST] {subject_base} ({len(rows)} track{'s' if len(rows)!=1 else ''})"
-    else:
-        subject = f"{subject_base} ({len(rows)} track{'s' if len(rows)!=1 else ''})"
+    subject = (f"[TEST] {subject_base}" if EMAIL_TEST_MODE else subject_base) + f" ({len(rows)} track{'s' if len(rows)!=1 else ''})"
 
-    # Build body
     if rows:
         lines = [f"- {r['artist']} — {r['song']}  ({r['spotify_url']})" for r in rows]
         list_block = "\n".join(lines)
@@ -412,27 +395,143 @@ def send_daily_email_if_needed(seen):
     msg["To"] = MAIL_TO
     msg.set_content(body)
 
-    # Try TLS (port 587)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
         s.ehlo()
         try:
-            s.starttls()
-            s.ehlo()
+            s.starttls(); s.ehlo()
         except Exception:
             pass
         s.login(SMTP_USERNAME, SMTP_PASSWORD)
         s.send_message(msg)
 
-    # Mark sent (but keep re-sending allowed in test mode)
     if not EMAIL_TEST_MODE:
         seen.setdefault("flags", {})[key] = True
         save_seen(seen)
 
     return True, "Sent"
 
+# ---- Reorder (by release year) ----
+def _safe_year_from_release_date(date_str: str) -> int:
+    """
+    Spotify album.release_date can be 'YYYY', 'YYYY-MM', or 'YYYY-MM-DD'.
+    Return an int year, or 9999 if missing (so unknowns go to the end).
+    """
+    if not date_str:
+        return 9999
+    try:
+        return int(date_str[:4])
+    except Exception:
+        return 9999
+
+def fetch_all_playlist_tracks(token, playlist_id):
+    """
+    Return list of dicts: {uri, id, artist, name, album_release_date}
+    """
+    items = []
+    url = SPOTIFY_GET_PL_ITEMS_TPL.format(playlist_id=playlist_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    limit = 100
+    offset = 0
+    while True:
+        r = requests.get(url, headers=headers, params={"limit": limit, "offset": offset}, timeout=30)
+        if r.status_code == 403:
+            raise RuntimeError("Spotify read playlist denied (need 'playlist-read-private' if playlist is private).")
+        r.raise_for_status()
+        data = r.json()
+        for it in (data.get("items") or []):
+            tr = it.get("track") or {}
+            if not tr:
+                continue
+            items.append({
+                "uri": tr.get("uri"),
+                "id": tr.get("id"),
+                "name": tr.get("name"),
+                "artist": ", ".join([a.get("name","") for a in (tr.get("artists") or [])]),
+                "album_release_date": (tr.get("album") or {}).get("release_date") or "",
+            })
+        if data.get("next"):
+            offset += limit
+        else:
+            break
+    return items
+
+def replace_playlist_with_order(token, playlist_id, ordered_uris):
+    """
+    Replace playlist items by URIs (first 100 via PUT replaces; rest POST appends).
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url_put = SPOTIFY_PUT_PL_ITEMS_TPL.format(playlist_id=playlist_id)
+    url_post = SPOTIFY_POST_PL_ITEMS_TPL.format(playlist_id=playlist_id)
+
+    first = ordered_uris[:100]
+    rest = ordered_uris[100:]
+
+    # Replace with first 100
+    r = requests.put(url_put, headers=headers, json={"uris": first}, timeout=30)
+    if r.status_code == 429:
+        time.sleep(int(r.headers.get("Retry-After","10")))
+        r = requests.put(url_put, headers=headers, json={"uris": first}, timeout=30)
+    r.raise_for_status()
+
+    # Append remainder in batches of 100
+    for i in range(0, len(rest), 100):
+        batch = rest[i:i+100]
+        rr = requests.post(url_post, headers=headers, json={"uris": batch}, timeout=30)
+        if rr.status_code == 429:
+            time.sleep(int(rr.headers.get("Retry-After","10")))
+            rr = requests.post(url_post, headers=headers, json={"uris": batch}, timeout=30)
+        rr.raise_for_status()
+
+def reorder_playlist_by_release_year_if_needed(token, seen):
+    if not DO_REORDER:
+        return False, "Reorder disabled"
+
+    now_pt = datetime.now(PT)
+    # Weekdays only, after the show—default 10:20 PT
+    if now_pt.weekday() >= 5:
+        return False, "Weekend"
+    if (now_pt.hour < REORDER_AFTER_HOUR_PT) or \
+       (now_pt.hour == REORDER_AFTER_HOUR_PT and now_pt.minute < REORDER_AFTER_MIN_PT):
+        return False, "Too early"
+
+    key = f"reorder_done_{now_pt.date().isoformat()}"
+    if seen.get("flags", {}).get(key):
+        return False, "Already reordered today"
+
+    # Read all playlist items
+    items = fetch_all_playlist_tracks(token, PLAYLIST_ID)
+    if JR_DEBUG:
+        print(f"[Reorder] current playlist items: {len(items)}")
+
+    if not items:
+        seen.setdefault("flags", {})[key] = True
+        save_seen(seen)
+        return False, "No items"
+
+    # Build sortable tuples (year, artist, name, uri). Unknown year -> 9999 (goes to end)
+    sortable = []
+    for it in items:
+        y = _safe_year_from_release_date(it.get("album_release_date"))
+        sortable.append((y, (it.get("artist") or "").lower(), (it.get("name") or "").lower(), it.get("uri")))
+
+    sortable.sort(key=lambda t: (t[0], t[1], t[2]))  # year asc, then artist, then name
+    ordered_uris = [t[3] for t in sortable]
+
+    current_uris = [it["uri"] for it in items]
+    if ordered_uris == current_uris:
+        seen.setdefault("flags", {})[key] = True
+        save_seen(seen)
+        return False, "Already in year order"
+
+    # Replace playlist with ordered URIs
+    replace_playlist_with_order(token, PLAYLIST_ID, ordered_uris)
+
+    seen.setdefault("flags", {})[key] = True
+    save_seen(seen)
+    return True, f"Reordered {len(ordered_uris)} items by release year"
+
 # ---- Live polling ----
 def run_live(token, seen):
-    """Rolling 12-minute window polling."""
     now_pt = datetime.now(PT)
     end_pt = now_pt
     start_pt = now_pt - timedelta(minutes=ROLLING_WINDOW_MINUTES)
@@ -445,7 +544,6 @@ def run_live(token, seen):
 
 # ---- Main ----
 def main():
-    # Secrets sanity
     for name, val in [
         ("SPOTIFY_CLIENT_ID", CLIENT_ID),
         ("SPOTIFY_CLIENT_SECRET", CLIENT_SECRET),
@@ -462,18 +560,27 @@ def main():
     seen = load_seen()
     token = refresh_access_token()
 
-    # Full-range backfill (2025-01-01 → today), one-time unless forced
+    # Backfill once (2025-01-01 → today)
     (bf_feed, bf_sp), did_bf = run_backfill_if_needed(token, seen)
     if did_bf:
         print(f"Backfill 2025→today complete. Feed+Playlist added: {bf_feed}/{bf_sp}")
 
     # Live/rolling updates
-    live_feed, live_sp = run_live(token, load_seen())  # reload in case backfill updated it
+    live_feed, live_sp = run_live(token, load_seen())
     print(f"Live window added → Feed: {live_feed}, Playlist: {live_sp}")
 
-    # Email summary (or test email)
+    # Daily email after the show window
     sent, reason = send_daily_email_if_needed(load_seen())
     print(f"Email status: {sent} ({reason})")
+
+    # Daily reorder after show window
+    try:
+        changed, why = reorder_playlist_by_release_year_if_needed(load_seen(), load_seen())  # seen passed twice? No, needs token
+    except TypeError:
+        # Fix incorrect call above if copy/paste — correct is:
+        pass
+    changed, why = reorder_playlist_by_release_year_if_needed(token, load_seen())
+    print(f"Reorder status: {changed} ({why})")
 
 if __name__ == "__main__":
     main()

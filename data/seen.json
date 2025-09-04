@@ -3314,6 +3314,8 @@
     "email_sent_2025-09-02": true,
     "email_sent_2025-09-03": true,
     "reorder_done_2025-09-03": true,
-    "dedupe_done_2025-09-03": true
+    "dedupe_done_2025-09-03": true,
+    "reorder_done_2025-09-04": true,
+    "dedupe_done_2025-09-04": true
   }
 }

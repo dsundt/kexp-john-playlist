@@ -3549,6 +3549,8 @@
     "email_sent_2025-09-25": true,
     "reorder_done_2025-09-25": true,
     "dedupe_done_2025-09-25": true,
-    "email_sent_2025-09-26": true
+    "email_sent_2025-09-26": true,
+    "reorder_done_2025-09-26": true,
+    "dedupe_done_2025-09-26": true
   }
 }

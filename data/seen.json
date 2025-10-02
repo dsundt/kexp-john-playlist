@@ -1053,6 +1053,7 @@
     "jr::5a690c36-9259-41c7-a310-a57ff9d8a21b",
     "jr::5a8d0094-e2e4-4909-b4b9-1db38cc6409a",
     "jr::5aa5f0c7-9bb1-394e-98bb-938a94653fe6",
+    "jr::5ab89e29-8c4c-4fb6-ba56-bf115820108c",
     "jr::5abd3612-b630-3210-af48-761dd2edbd1c",
     "jr::5ac1b0b1-b641-4583-bf60-6fb92827211b",
     "jr::5ac710ad-2c62-4baf-abdb-9eca6a180b29",
@@ -3606,6 +3607,7 @@
     "dedupe_done_2025-09-30": true,
     "email_sent_2025-10-01": true,
     "reorder_done_2025-10-01": true,
-    "dedupe_done_2025-10-01": true
+    "dedupe_done_2025-10-01": true,
+    "email_sent_2025-10-02": true
   }
 }

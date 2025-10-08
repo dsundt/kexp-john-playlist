@@ -3673,6 +3673,8 @@
     "email_sent_2025-10-07": true,
     "reorder_done_2025-10-07": true,
     "dedupe_done_2025-10-07": true,
-    "email_sent_2025-10-08": true
+    "email_sent_2025-10-08": true,
+    "reorder_done_2025-10-08": true,
+    "dedupe_done_2025-10-08": true
   }
 }

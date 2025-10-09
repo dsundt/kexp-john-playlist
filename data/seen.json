@@ -3684,6 +3684,8 @@
     "email_sent_2025-10-08": true,
     "reorder_done_2025-10-08": true,
     "dedupe_done_2025-10-08": true,
-    "email_sent_2025-10-09": true
+    "email_sent_2025-10-09": true,
+    "reorder_done_2025-10-09": true,
+    "dedupe_done_2025-10-09": true
   }
 }

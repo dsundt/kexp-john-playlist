@@ -4301,6 +4301,9 @@
     "dedupe_done_2026-01-02": true,
     "email_sent_2026-01-05": true,
     "reorder_done_2026-01-05": true,
-    "dedupe_done_2026-01-05": true
+    "dedupe_done_2026-01-05": true,
+    "email_sent_2026-01-06": true,
+    "reorder_done_2026-01-06": true,
+    "dedupe_done_2026-01-06": true
   }
 }

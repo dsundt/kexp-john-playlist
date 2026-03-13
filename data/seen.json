@@ -4675,6 +4675,9 @@
     "reorder_done_2026-03-11": true,
     "dedupe_done_2026-03-11": true,
     "reorder_done_2026-03-12": true,
-    "dedupe_done_2026-03-12": true
+    "dedupe_done_2026-03-12": true,
+    "email_sent_2026-03-13": true,
+    "reorder_done_2026-03-13": true,
+    "dedupe_done_2026-03-13": true
   }
 }

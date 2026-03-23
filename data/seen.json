@@ -4717,6 +4717,8 @@
     "email_sent_2026-03-20": true,
     "reorder_done_2026-03-20": true,
     "dedupe_done_2026-03-20": true,
-    "email_sent_2026-03-23": true
+    "email_sent_2026-03-23": true,
+    "reorder_done_2026-03-23": true,
+    "dedupe_done_2026-03-23": true
   }
 }

@@ -4895,6 +4895,8 @@
     "email_sent_2026-05-01": true,
     "reorder_done_2026-05-01": true,
     "dedupe_done_2026-05-01": true,
-    "email_sent_2026-05-04": true
+    "email_sent_2026-05-04": true,
+    "reorder_done_2026-05-04": true,
+    "dedupe_done_2026-05-04": true
   }
 }

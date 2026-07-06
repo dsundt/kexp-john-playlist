@@ -168,6 +168,7 @@
     "jr::0c1e34a9-96e4-3e60-b9ba-7564ec726204",
     "jr::0c372900-6c35-3a0d-b131-33f432b03000",
     "jr::0c4e66a5-6bc1-424e-ab22-6b97cb91c223",
+    "jr::0c7f8048-f770-4b45-aa30-b73fa98b9d95",
     "jr::0c88c8a0-2180-44ab-8bc8-7632c9673a31",
     "jr::0c8a8425-937d-3cdd-953c-bca26496c870",
     "jr::0c9a68e3-9f6d-419a-96f0-ea99b61f930e",
@@ -5133,6 +5134,7 @@
     "reorder_done_2026-07-02": true,
     "dedupe_done_2026-07-02": true,
     "reorder_done_2026-07-03": true,
-    "dedupe_done_2026-07-03": true
+    "dedupe_done_2026-07-03": true,
+    "email_sent_2026-07-06": true
   }
 }

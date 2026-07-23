@@ -646,7 +646,8 @@ def main(session=None, env=None, now=None):
     try:
         ensure_dirs()
         feed_mod.ensure_exists(FEED_PATH, FEED_TITLE, FEED_LINK, FEED_DESC)
-        if feed_mod.normalize_if_needed(FEED_PATH, max_items=config.feed_max_items):
+        if feed_mod.normalize_if_needed(FEED_PATH, max_items=config.feed_max_items,
+                                        title=FEED_TITLE, link=FEED_LINK, desc=FEED_DESC):
             print("Feed normalized (healed malformed XML and/or trimmed to cap).")
 
         token = sp.refresh_token()

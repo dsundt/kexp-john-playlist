@@ -54,6 +54,42 @@ def test_normalize_heals_stray_amp_and_trims_then_idempotent(tmp_path):
     assert changed_again is False
 
 
+def test_normalize_heals_malformed_preamble_not_just_amp(tmp_path):
+    """A non-'&' malformation in the preamble (broken <channel> tag) must be
+    healed by rebuilding the header — never reported as healed-but-still-broken."""
+    path = str(tmp_path / "feed.xml")
+    # Broken opening tag "<channelX>" -> raw does NOT parse, and there is no
+    # stray '&', so the old amp-only heal would have left it broken.
+    broken = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0">\n'
+        "<channelX>\n"
+        "<title>Test Feed</title>\n"
+        "<link>http://example.com</link>\n"
+        "<description>desc</description>\n"
+        "<item>\n"
+        "  <title>Artist — Song</title>\n"
+        "  <link>http://x/1</link>\n"
+        '  <guid isPermaLink="false">g1</guid>\n'
+        "  <pubDate>2026-01-01T00:00:00+00:00</pubDate>\n"
+        "</item>\n"
+        "</channel>\n</rss>\n"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(broken)
+
+    changed = normalize_if_needed(path, max_items=200)
+    assert changed is True
+
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    root = ET.fromstring(raw)                      # must parse — no ParseError
+    assert len(root.findall("./channel/item")) == 1
+
+    # Idempotent: already well-formed -> no rewrite.
+    assert normalize_if_needed(path, max_items=200) is False
+
+
 def test_append_item_escapes_and_roundtrips(tmp_path):
     path = str(tmp_path / "feed.xml")
     ensure_exists(path, "Feed Title", "http://example.com", "desc")

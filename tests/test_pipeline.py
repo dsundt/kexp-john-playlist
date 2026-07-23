@@ -15,18 +15,26 @@ def _cfg():
     })
 
 
+def _dup_playlist_object_response():
+    """GET .../playlists/{id}?fields=snapshot_id -- the ONLY place snapshot_id
+    appears in the real API."""
+    return FakeResponse(200, {"snapshot_id": "S1"})
+
+
 def _dup_playlist_response():
+    """GET .../playlists/{id}/tracks paging response -- NO snapshot_id key."""
     tr = {
         "uri": "spotify:track:a", "id": "a", "name": "Song",
         "artists": [{"name": "X"}], "album": {"release_date": "2020"},
         "external_ids": {"isrc": "I1"},
     }
-    return FakeResponse(200, {"snapshot_id": "S1", "items": [{"track": tr}, {"track": tr}]})
+    return FakeResponse(200, {"items": [{"track": tr}, {"track": tr}]})
 
 
 def test_run_dedupe_same_uri_dup_deletes_then_readds_and_backs_up(fake_session, tmp_path):
     # The playlist holds the SAME uri twice (exact id dup) -> keep 1, so the
     # uri-based removal must DELETE the uri then re-add one kept copy.
+    fake_session.queue("get", _dup_playlist_object_response())
     fake_session.queue("get", _dup_playlist_response())
     fake_session.queue("delete", FakeResponse(200, {"snapshot_id": "S2"}))
     fake_session.queue("post", FakeResponse(201, {"snapshot_id": "S3"}))
@@ -58,17 +66,19 @@ def test_run_dedupe_same_uri_dup_deletes_then_readds_and_backs_up(fake_session, 
 
 def _distinct_dup_playlist_response():
     """Two DISTINCT uris that safe-key collide (same normalized title/artist) ->
-    the removed uri appears once, so it's a pure DELETE with NO re-add."""
+    the removed uri appears once, so it's a pure DELETE with NO re-add.
+    (Real tracks-paging shape -- NO snapshot_id key.)"""
     keep = {"uri": "spotify:track:a", "id": "a", "name": "Song",
             "artists": [{"name": "X"}], "album": {"release_date": "2020"},
             "external_ids": {"isrc": "I1"}}
     dup = {"uri": "spotify:track:b", "id": "b", "name": "Song",
            "artists": [{"name": "X"}], "album": {"release_date": "2020"},
            "external_ids": {"isrc": "I2"}}
-    return FakeResponse(200, {"snapshot_id": "S1", "items": [{"track": keep}, {"track": dup}]})
+    return FakeResponse(200, {"items": [{"track": keep}, {"track": dup}]})
 
 
 def test_run_dedupe_distinct_uri_deletes_no_readd(fake_session, tmp_path):
+    fake_session.queue("get", _dup_playlist_object_response())
     fake_session.queue("get", _distinct_dup_playlist_response())
     fake_session.queue("delete", FakeResponse(200, {"snapshot_id": "S2"}))
     sc = SpotifyClient(fake_session, _cfg(), sleep=lambda *_: None)
@@ -88,6 +98,7 @@ def test_run_dedupe_distinct_uri_deletes_no_readd(fake_session, tmp_path):
 
 
 def test_run_dedupe_dry_run_mutates_nothing(fake_session, tmp_path):
+    fake_session.queue("get", _dup_playlist_object_response())
     fake_session.queue("get", _dup_playlist_response())
     sc = SpotifyClient(fake_session, _cfg(), sleep=lambda *_: None)
 

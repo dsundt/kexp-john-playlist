@@ -20,6 +20,7 @@ from kexp.http import request_json
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 PLAYLIST_ITEMS_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+PLAYLIST_OBJECT_TPL = "https://api.spotify.com/v1/playlists/{playlist_id}"
 
 
 class PlaylistVerifyError(RuntimeError):
@@ -69,11 +70,23 @@ class SpotifyClient:
         raise last_exc
 
     def fetch_playlist(self, token):
-        """Return (snapshot_id, items). Each item: uri,id,isrc,name,artist,album_release_date,position."""
+        """Return (snapshot_id, items). Each item: uri,id,isrc,name,artist,album_release_date,position.
+
+        `snapshot_id` is NOT present on the `GET .../tracks` paging response
+        (only `items`/`next`) -- it lives on the playlist object itself, so
+        it's fetched with a separate `GET .../playlists/{id}?fields=snapshot_id`.
+        """
         items = []
-        snapshot_id = None
-        url = PLAYLIST_ITEMS_TPL.format(playlist_id=self.config.playlist_id)
         headers = {"Authorization": f"Bearer {token}"}
+
+        obj_url = PLAYLIST_OBJECT_TPL.format(playlist_id=self.config.playlist_id)
+        obj_r = request_json(
+            self.session, "get", obj_url, expect=200, sleep=self.sleep,
+            headers=headers, params={"fields": "snapshot_id"}, timeout=30,
+        )
+        snapshot_id = obj_r.json().get("snapshot_id")
+
+        url = PLAYLIST_ITEMS_TPL.format(playlist_id=self.config.playlist_id)
         limit = 100
         offset = 0
         position = 0
@@ -83,8 +96,6 @@ class SpotifyClient:
                 headers=headers, params={"limit": limit, "offset": offset}, timeout=30,
             )
             data = r.json()
-            if snapshot_id is None:
-                snapshot_id = data.get("snapshot_id")
             for it in (data.get("items") or []):
                 tr = it.get("track") or {}
                 if not tr:

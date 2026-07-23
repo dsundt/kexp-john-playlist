@@ -3,8 +3,8 @@ import json
 import os
 
 from kexp.config import Config
-from kexp.spotify_client import SpotifyClient
-from kexp.pipeline import run_dedupe, build_membership
+from kexp.spotify_client import SpotifyClient, PlaylistVerifyError
+from kexp.pipeline import run_dedupe, run_reorder, build_membership
 from tests.conftest import FakeResponse
 
 
@@ -113,3 +113,71 @@ def test_build_membership():
     assert isrcs == {"I1"}
     assert ("the x", "song") in safe_keys
     assert ("y", "other") in safe_keys
+
+
+class _ReorderClient:
+    """Fake SpotifyClient for run_reorder: playlist needs reordering; verify and
+    (optionally) restore fail."""
+    def __init__(self, *, restore_raises):
+        self._restore_raises = restore_raises
+        self.reorder_calls = 0
+
+    def fetch_playlist(self, token):
+        # Two tracks out of year order so _compute_reorder != current order.
+        items = [
+            {"uri": "u1", "id": "1", "isrc": "I1", "name": "B",
+             "artist": "X", "album_release_date": "2020", "position": 0},
+            {"uri": "u2", "id": "2", "isrc": "I2", "name": "A",
+             "artist": "X", "album_release_date": "2000", "position": 1},
+        ]
+        return "S1", items
+
+    def replace_with_verify(self, token, ordered_uris, expected_set):
+        raise PlaylistVerifyError("post-replace verify failed")
+
+    def reorder(self, token, ordered_uris):
+        self.reorder_calls += 1
+        if self._restore_raises:
+            raise RuntimeError("restore write failed")
+
+
+def test_run_reorder_verify_fail_then_restore_fail_reports_critical(tmp_path, monkeypatch):
+    import kexp.pipeline as pipeline
+    alerts = []
+    monkeypatch.setattr(pipeline.alerting, "send_failure_email",
+                        lambda config, *, subject, body: alerts.append((subject, body)) or True)
+
+    client = _ReorderClient(restore_raises=True)
+    backup_dir = str(tmp_path / "backups")
+    changed, reason = run_reorder(
+        client, _cfg(), "tok", backup_dir, now_str="20260723T104000", dry_run=False
+    )
+
+    # Restore was attempted and itself failed -> must NOT claim "restored".
+    assert client.reorder_calls == 1
+    assert changed is False
+    assert "restore" in reason.lower() and "fail" in reason.lower()
+    assert "restored" not in reason.lower().replace("restore failed", "")
+    # A CRITICAL alert naming the restore failure + backup path was sent.
+    assert len(alerts) == 1
+    subject, body = alerts[0]
+    assert "restore" in (subject + body).lower() and "fail" in (subject + body).lower()
+    assert "playlist-20260723T104000.json" in body
+
+
+def test_run_reorder_verify_fail_then_restore_ok_reports_restored(tmp_path, monkeypatch):
+    import kexp.pipeline as pipeline
+    alerts = []
+    monkeypatch.setattr(pipeline.alerting, "send_failure_email",
+                        lambda config, *, subject, body: alerts.append((subject, body)) or True)
+
+    client = _ReorderClient(restore_raises=False)
+    backup_dir = str(tmp_path / "backups")
+    changed, reason = run_reorder(
+        client, _cfg(), "tok", backup_dir, now_str="20260723T104000", dry_run=False
+    )
+
+    assert client.reorder_calls == 1
+    assert changed is False
+    assert "restored" in reason.lower()
+    assert len(alerts) == 1

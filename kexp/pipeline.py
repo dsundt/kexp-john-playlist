@@ -322,17 +322,31 @@ def run_reorder(client, config, token, backup_dir, *, now_str, dry_run):
     if dry_run:
         return False, f"[dry-run] would reorder {len(ordered_uris)} items"
 
-    backup_mod.write_backup(backup_dir, snapshot_id, current_uris, now_str=now_str)
+    backup_path = backup_mod.write_backup(backup_dir, snapshot_id, current_uris, now_str=now_str)
     expected_set = set(ordered_uris)
     try:
         client.replace_with_verify(token, ordered_uris, expected_set)
     except PlaylistVerifyError as e:
-        # Restore original order from the backup, then alert loudly.
+        # Verification failed — try to restore the original order from the backup.
         try:
             client.reorder(token, current_uris)
-        except Exception as restore_err:  # noqa: BLE001 - best-effort restore
+        except Exception as restore_err:  # noqa: BLE001 - restore is best-effort
+            # CRITICAL: verify failed AND we couldn't put the playlist back. Do
+            # NOT claim a restore happened — the playlist may now be inconsistent.
             print(f"[reorder] restore FAILED after verify error: {restore_err}",
                   file=sys.stderr)
+            alerting.send_failure_email(
+                config,
+                subject=f"{config.mail_subject_prefix} — REORDER VERIFY FAILED AND RESTORE FAILED",
+                body=(f"CRITICAL: playlist reorder verification failed AND the "
+                      f"restore-from-backup ALSO failed — the playlist may be "
+                      f"inconsistent. Restore it manually from the backup at "
+                      f"{backup_path}.\n\nVerify error: {e}\n"
+                      f"Restore error: {restore_err}"),
+            )
+            backup_mod.prune(backup_dir, keep=30)
+            return False, f"Verify failed AND restore FAILED; backup at {backup_path} ({e})"
+        # Restore succeeded — alert that we recovered.
         alerting.send_failure_email(
             config,
             subject=f"{config.mail_subject_prefix} — REORDER VERIFY FAILED (restored)",

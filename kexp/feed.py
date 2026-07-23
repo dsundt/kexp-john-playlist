@@ -11,11 +11,12 @@ Channel metadata (title/link/desc) is only needed to create a brand-new feed
 across `append_item`/`normalize_if_needed` calls — only the <item> blocks and
 XML well-formedness are managed by this module.
 """
+import html
 import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from xml.sax.saxutils import escape as xml_escape, unescape as xml_unescape
+from xml.sax.saxutils import escape as xml_escape
 
 # Match one <item>...</item> block (used to parse/trim the feed).
 _ITEM_RE = re.compile(r"[ \t]*<item>.*?</item>\n?", re.DOTALL)
@@ -37,6 +38,18 @@ _DEFAULT_LINK = "https://www.kexp.org/schedule/"
 _DEFAULT_DESC = "Audit feed"
 
 
+def _full_unescape(s):
+    """Fully decode XML/HTML entities -- &amp; &lt; &gt; &apos; &quot; AND
+    numeric char refs (&#39; &#x27;) -- before any value is re-escaped via
+    xml_escape(). Using only xml.sax.saxutils.unescape's default entity set
+    (amp/lt/gt) would leave &apos;/&quot;/numeric refs encoded, so a
+    subsequent xml_escape() would double-encode them (e.g. "&amp;apos;").
+    html.unescape() decodes the full entity set (including numeric refs) in
+    one pass, so recovered text round-trips to the correct literal chars.
+    """
+    return html.unescape(s)
+
+
 def _parses(path) -> bool:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -53,7 +66,7 @@ def _channel_meta(preamble, title, link, desc):
         if given is not None:
             return given
         m = rx.search(preamble or "")
-        return xml_unescape(m.group(1).strip()) if m else default
+        return _full_unescape(m.group(1).strip()) if m else default
     return (
         recover(_CH_TITLE_RE, title, _DEFAULT_TITLE),
         recover(_CH_LINK_RE, link, _DEFAULT_LINK),
@@ -66,7 +79,7 @@ def _reescape_item(block):
     markup inside the fields). Returns None if title/link/guid can't be found."""
     def grab(rx):
         m = rx.search(block)
-        return xml_unescape(m.group(1).strip()) if m else None
+        return _full_unescape(m.group(1).strip()) if m else None
     title = grab(_IT_TITLE_RE)
     link = grab(_IT_LINK_RE)
     guid = grab(_IT_GUID_RE)

@@ -90,6 +90,50 @@ def test_normalize_heals_malformed_preamble_not_just_amp(tmp_path):
     assert normalize_if_needed(path, max_items=200) is False
 
 
+def test_normalize_heal_preserves_entities_without_double_encoding(tmp_path):
+    """When the item-rebuild fallback (_reescape_item) fires, &apos;/&quot;/
+    numeric char refs already present in the on-disk feed must be fully
+    decoded before re-escaping -- not left encoded and then double-escaped
+    into literal '&amp;apos;' etc."""
+    path = str(tmp_path / "feed.xml")
+    # An unescaped '<' inside the item text forces a genuine ET.ParseError that
+    # survives the header-only rebuild, so normalize_if_needed must fall back
+    # to _reescape_item to recover this item.
+    broken = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0">\n'
+        "<channel>\n"
+        "<title>Test Feed</title>\n"
+        "<link>http://example.com</link>\n"
+        "<description>desc</description>\n"
+        "<item>\n"
+        "  <title>Rock &apos;n&apos; Roll &quot;Live&quot; &#39;80s&#39;"
+        " &#x27;encore&#x27; A < B</title>\n"
+        "  <link>http://x/1</link>\n"
+        '  <guid isPermaLink="false">g1</guid>\n'
+        "  <pubDate>2026-01-01T00:00:00+00:00</pubDate>\n"
+        "</item>\n"
+        "</channel>\n</rss>\n"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(broken)
+
+    changed = normalize_if_needed(path, max_items=200)
+    assert changed is True
+
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+    root = ET.fromstring(raw)  # must parse -- proves the heal recovered well-formed XML
+    item_title = root.find("./channel/item/title").text
+    assert item_title == "Rock 'n' Roll \"Live\" '80s' 'encore' A < B"
+    # Never double-encoded (e.g. "&amp;apos;" instead of "'").
+    assert "&amp;apos;" not in raw
+    assert "&amp;quot;" not in raw
+    assert "&amp;#39;" not in raw
+    assert "&amp;#x27;" not in raw
+
+
 def test_append_item_escapes_and_roundtrips(tmp_path):
     path = str(tmp_path / "feed.xml")
     ensure_exists(path, "Feed Title", "http://example.com", "desc")

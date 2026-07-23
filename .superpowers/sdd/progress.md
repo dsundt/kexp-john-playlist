@@ -8,8 +8,8 @@ Branch: feat/2026-07-23-phase1-kexp-package
 - [x] Task 3: feed
 - [x] Task 4: matching
 - [x] Task 5: dedupe
-- [ ] Task 6: spotify_client
-- [ ] Task 7: kexp_client
+- [x] Task 6: spotify_client
+- [x] Task 7: kexp_client
 - [ ] Task 8: backup
 - [ ] Task 9: alerting
 - [ ] Task 10: emailer

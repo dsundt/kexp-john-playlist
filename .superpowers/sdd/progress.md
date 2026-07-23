@@ -10,9 +10,9 @@ Branch: feat/2026-07-23-phase1-kexp-package
 - [x] Task 5: dedupe
 - [x] Task 6: spotify_client
 - [x] Task 7: kexp_client
-- [ ] Task 8: backup
-- [ ] Task 9: alerting
-- [ ] Task 10: emailer
+- [x] Task 8: backup
+- [x] Task 9: alerting
+- [x] Task 10: emailer
 - [ ] Task 11: pipeline
 - [ ] Task 12: thin run.py + e2e
 - [ ] Task 13: cleanup verification test

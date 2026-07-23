@@ -3,6 +3,7 @@ import os, sys, json, time, re, csv
 from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
 from xml.sax.saxutils import escape as xml_escape
+import xml.etree.ElementTree as ET
 import requests
 import smtplib
 from email.message import EmailMessage
@@ -155,6 +156,28 @@ def ensure_feed_exists():
     if os.path.exists(FEED_PATH):
         return
     _write_feed([])
+
+def normalize_feed_if_needed():
+    """Heal/trim the feed once when it's actually broken or oversized.
+
+    Rewrites only when needed so we don't churn a commit (lastBuildDate) every run.
+    """
+    if not os.path.exists(FEED_PATH):
+        return False
+    with open(FEED_PATH, "r", encoding="utf-8") as f:
+        raw = f.read()
+    needs = bool(_STRAY_AMP_RE.search(raw))
+    if not needs:
+        try:
+            ET.fromstring(raw)
+        except ET.ParseError:
+            needs = True
+    items = _read_feed_items()  # heals stray '&' in-memory
+    if not needs and FEED_MAX_ITEMS and len(items) > FEED_MAX_ITEMS:
+        needs = True
+    if needs:
+        _write_feed(items)
+    return needs
 
 def append_feed_item(title, link, guid, pubdate_iso):
     """Append one escaped item, rebuilding the feed (self-heals + trims to FEED_MAX_ITEMS)."""
@@ -692,6 +715,8 @@ def main():
 
     ensure_dirs()
     ensure_feed_exists()
+    if normalize_feed_if_needed():
+        print("Feed normalized (healed malformed XML and/or trimmed to cap).")
 
     seen = load_seen()
     token = refresh_access_token()

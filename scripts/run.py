@@ -2,9 +2,15 @@
 import os, sys, json, time, re, csv
 from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
+from xml.sax.saxutils import escape as xml_escape
+import xml.etree.ElementTree as ET
 import requests
 import smtplib
 from email.message import EmailMessage
+
+# Shared HTTP session (connection reuse + one place for default headers).
+SESSION = requests.Session()
+SESSION.headers.update({"User-Agent": "kexp-john-playlist/1.0 (+github actions)"})
 
 # ---- Config ----
 FEED_PATH = "docs/feed.xml"
@@ -17,6 +23,7 @@ FEED_DESC = "Tracks played during The Morning Show (KEXP) matched on Spotify; al
 KEXP_PLAYS_URL = "https://api.kexp.org/v2/plays/"
 HOST_ID_JOHN = 26
 ROLLING_WINDOW_MINUTES = 12
+FEED_MAX_ITEMS = int(os.getenv("FEED_MAX_ITEMS", "200"))  # cap audit feed; 0 = unbounded
 
 # Spotify OAuth (user)
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -100,40 +107,83 @@ def log_not_found(artist, song, reason):
         ts = datetime.now(PT).isoformat()
         f.write(f"{ts},{artist},{song},{reason}\n")
 
+# Match one <item>...</item> block (used to parse/trim the feed).
+_ITEM_RE = re.compile(r"[ \t]*<item>.*?</item>\n?", re.DOTALL)
+# Match a bare & that is NOT already the start of a valid entity (legacy self-heal).
+_STRAY_AMP_RE = re.compile(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9A-Fa-f]+);)")
+
+def _feed_header():
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0">\n'
+        "<channel>\n"
+        f"<title>{xml_escape(FEED_TITLE)}</title>\n"
+        f"<link>{xml_escape(FEED_LINK)}</link>\n"
+        f"<description>{xml_escape(FEED_DESC)}</description>\n"
+        "<language>en-us</language>\n"
+        f'<lastBuildDate>{datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %Z")}</lastBuildDate>\n'
+    )
+
+def _build_item(title, link, guid, pubdate_iso):
+    return (
+        "<item>\n"
+        f"  <title>{xml_escape(title)}</title>\n"
+        f"  <link>{xml_escape(link)}</link>\n"
+        f'  <guid isPermaLink="false">{xml_escape(guid)}</guid>\n'
+        f"  <pubDate>{xml_escape(pubdate_iso)}</pubDate>\n"
+        "</item>\n"
+    )
+
+def _read_feed_items():
+    """Return existing <item> blocks (self-healing legacy unescaped ampersands)."""
+    if not os.path.exists(FEED_PATH):
+        return []
+    with open(FEED_PATH, "r", encoding="utf-8") as f:
+        xml = f.read()
+    xml = _STRAY_AMP_RE.sub("&amp;", xml)  # repair legacy malformed content in-place
+    return [m.group(0) if m.group(0).endswith("\n") else m.group(0) + "\n"
+            for m in _ITEM_RE.finditer(xml)]
+
+def _write_feed(items):
+    if FEED_MAX_ITEMS and len(items) > FEED_MAX_ITEMS:
+        items = items[-FEED_MAX_ITEMS:]  # keep the most-recent N
+    with open(FEED_PATH, "w", encoding="utf-8") as f:
+        f.write(_feed_header())
+        f.writelines(items)
+        f.write("</channel>\n</rss>\n")
+
 def ensure_feed_exists():
     if os.path.exists(FEED_PATH):
         return
-    with open(FEED_PATH, "w", encoding="utf-8") as f:
-        f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-<channel>
-<title>{FEED_TITLE}</title>
-<link>{FEED_LINK}</link>
-<description>{FEED_DESC}</description>
-<language>en-us</language>
-<lastBuildDate>{datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %Z")}</lastBuildDate>
-</channel>
-</rss>""")
+    _write_feed([])
+
+def normalize_feed_if_needed():
+    """Heal/trim the feed once when it's actually broken or oversized.
+
+    Rewrites only when needed so we don't churn a commit (lastBuildDate) every run.
+    """
+    if not os.path.exists(FEED_PATH):
+        return False
+    with open(FEED_PATH, "r", encoding="utf-8") as f:
+        raw = f.read()
+    needs = bool(_STRAY_AMP_RE.search(raw))
+    if not needs:
+        try:
+            ET.fromstring(raw)
+        except ET.ParseError:
+            needs = True
+    items = _read_feed_items()  # heals stray '&' in-memory
+    if not needs and FEED_MAX_ITEMS and len(items) > FEED_MAX_ITEMS:
+        needs = True
+    if needs:
+        _write_feed(items)
+    return needs
 
 def append_feed_item(title, link, guid, pubdate_iso):
-    with open(FEED_PATH, "r", encoding="utf-8") as f:
-        xml = f.read()
-    insert_at = xml.rfind("</channel>")
-    if insert_at == -1:
-        ensure_feed_exists()
-        with open(FEED_PATH, "r", encoding="utf-8") as f:
-            xml = f.read()
-        insert_at = xml.rfind("</channel>")
-    item = f"""
-<item>
-  <title>{title}</title>
-  <link>{link}</link>
-  <guid isPermaLink="false">{guid}</guid>
-  <pubDate>{pubdate_iso}</pubDate>
-</item>"""
-    new_xml = xml[:insert_at] + item + "\n" + xml[insert_at:]
-    with open(FEED_PATH, "w", encoding="utf-8") as f:
-        f.write(new_xml)
+    """Append one escaped item, rebuilding the feed (self-heals + trims to FEED_MAX_ITEMS)."""
+    items = _read_feed_items()
+    items.append(_build_item(title, link, guid, pubdate_iso))
+    _write_feed(items)
 
 def clean_title(s):
     if not s: return s
@@ -169,9 +219,28 @@ def read_daily_rows(day_pt: date):
 # ---- Spotify auth & calls ----
 def refresh_access_token():
     data = {"grant_type": "refresh_token", "refresh_token": REFRESH_TOKEN}
-    r = requests.post(SPOTIFY_TOKEN_URL, data=data, auth=(CLIENT_ID, CLIENT_SECRET), timeout=20)
-    r.raise_for_status()
-    return r.json()["access_token"]
+    last_exc = None
+    for attempt in range(3):
+        try:
+            r = SESSION.post(SPOTIFY_TOKEN_URL, data=data, auth=(CLIENT_ID, CLIENT_SECRET), timeout=20)
+        except requests.RequestException as e:
+            # No response yet (ConnectionError/Timeout/etc.) — retry rather than abort.
+            last_exc = e
+            print(f"[token-refresh] network error (attempt {attempt + 1}/3): {e}", file=sys.stderr)
+            time.sleep(2 * (attempt + 1))
+            continue
+        if r.status_code == 200:
+            return r.json()["access_token"]
+        # Surface Spotify's error body so failures are actionable (never log the secrets).
+        print(f"[token-refresh] status={r.status_code} body={r.text} "
+              f"(client_id_len={len(CLIENT_ID or '')} secret_len={len(CLIENT_SECRET or '')} "
+              f"refresh_len={len(REFRESH_TOKEN or '')})", file=sys.stderr)
+        # 4xx (invalid_grant/invalid_client) won't fix on retry; fail fast.
+        if 400 <= r.status_code < 500:
+            r.raise_for_status()
+        last_exc = requests.HTTPError(f"{r.status_code} on token refresh", response=r)
+        time.sleep(2 * (attempt + 1))
+    raise last_exc
 
 def spotify_search_track(token, artist, song):
     q = f'track:"{song}" artist:"{artist}"'
@@ -205,22 +274,29 @@ def fetch_kexp_plays(airdate_after_iso, airdate_before_iso, limit=200):
     r.raise_for_status()
     return (r.json() or {}).get("results") or []
 
+_show_is_john_cache = {}  # show_uri -> bool (many plays share one show; fetch each show once)
+
 def is_john_show(show_uri):
     if JR_SKIP_HOST_CHECK:
         return True
     if not show_uri:
         return False
+    if show_uri in _show_is_john_cache:
+        return _show_is_john_cache[show_uri]
     try:
-        r = requests.get(show_uri, timeout=15)
+        r = SESSION.get(show_uri, timeout=15)
         r.raise_for_status()
         data = r.json()
-        hosts = data.get("hosts") or []
-        if HOST_ID_JOHN in hosts:
-            return True
-        host_names = [h.lower() for h in (data.get("host_names") or [])]
-        return any("john richards" in n for n in host_names)
-    except Exception:
+    except (requests.RequestException, ValueError) as e:
+        # Do NOT memoize failures: a transient error must not mark this show
+        # not-John for the rest of the run (would silently drop later plays).
+        print(f"[is_john_show] lookup failed for {show_uri}: {e}", file=sys.stderr)
         return False
+    hosts = data.get("hosts") or []
+    host_names = [h.lower() for h in (data.get("host_names") or [])]
+    result = (HOST_ID_JOHN in hosts) or any("john richards" in n for n in host_names)
+    _show_is_john_cache[show_uri] = result
+    return result
 
 def is_morning_show_airdate(airdate_iso):
     try:
@@ -649,6 +725,8 @@ def main():
 
     ensure_dirs()
     ensure_feed_exists()
+    if normalize_feed_if_needed():
+        print("Feed normalized (healed malformed XML and/or trimmed to cap).")
 
     seen = load_seen()
     token = refresh_access_token()

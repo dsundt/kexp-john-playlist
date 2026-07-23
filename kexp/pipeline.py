@@ -691,17 +691,22 @@ def main(session=None, env=None, now=None):
                                         now_pt=now_pt, opts=opts)
         print(f"Email status: {sent} ({reason})")
 
-        changed, why = maybe_reorder(sp, config, token, load_seen(),
-                                     now_pt=now_pt, now_str=now_str,
-                                     opts=opts, dry_run=dry_run)
-        print(f"Reorder status: {changed} ({why})")
-
+        # Dedupe runs BEFORE reorder: dedupe's uri-based removal can re-add
+        # kept exact-URI copies via POST (which append to the playlist END),
+        # so reorder must run last -- its full ordered replace then covers
+        # any copies dedupe re-added, establishing the final sorted order
+        # over the already-deduped set.
         deduped, why2, removed, report = maybe_dedupe(
             sp, config, token, load_seen(),
             now_pt=now_pt, now_str=now_str, opts=opts, dry_run=dry_run)
         print(f"Dedupe status: {deduped} ({why2})")
         counts["removed"] = removed
         counts["reported"] = len(report or near_report)
+
+        changed, why = maybe_reorder(sp, config, token, load_seen(),
+                                     now_pt=now_pt, now_str=now_str,
+                                     opts=opts, dry_run=dry_run)
+        print(f"Reorder status: {changed} ({why})")
 
         alerting.write_heartbeat(HEARTBEAT_PATH, now_str=now_pt.isoformat(), counts=counts)
     except SystemExit:

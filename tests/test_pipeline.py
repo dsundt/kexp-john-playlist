@@ -2,10 +2,17 @@
 import json
 import os
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from kexp.config import Config
 from kexp.spotify_client import SpotifyClient, PlaylistVerifyError
 from kexp.pipeline import run_dedupe, run_reorder, build_membership
+import kexp.pipeline as pipeline
 from tests.conftest import FakeResponse
+from tests.test_e2e_dryrun import RoutingSession
+
+PT = ZoneInfo("America/Los_Angeles")
 
 
 def _cfg():
@@ -84,7 +91,7 @@ def test_run_dedupe_distinct_uri_deletes_no_readd(fake_session, tmp_path):
     sc = SpotifyClient(fake_session, _cfg(), sleep=lambda *_: None)
 
     backup_dir = str(tmp_path / "backups")
-    removed, report = run_dedupe(
+    removed, _report = run_dedupe(
         sc, "tok", "pl", backup_dir, now_str="20260723T103000", dry_run=False
     )
 
@@ -192,3 +199,41 @@ def test_run_reorder_verify_fail_then_restore_ok_reports_restored(tmp_path, monk
     assert changed is False
     assert "restored" in reason.lower()
     assert len(alerts) == 1
+
+
+def test_main_runs_dedupe_before_reorder(tmp_path, monkeypatch):
+    """Dedupe's uri-based removal can re-add kept exact-URI copies via POST,
+    which append to the playlist END -- so dedupe must run BEFORE reorder's
+    full ordered replace, or those re-added tracks are left out of order."""
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("data", exist_ok=True)
+    with open("data/seen.json", "w") as f:
+        json.dump({"keys": [], "flags": {"backfill_done_range": True}}, f)
+
+    call_order = []
+
+    def fake_maybe_dedupe(client, config, token, seen, *, now_pt, now_str, opts, dry_run):
+        call_order.append("dedupe")
+        return False, "stub dedupe", 0, []
+
+    def fake_maybe_reorder(client, config, token, seen, *, now_pt, now_str, opts, dry_run):
+        call_order.append("reorder")
+        return False, "stub reorder"
+
+    monkeypatch.setattr(pipeline, "maybe_dedupe", fake_maybe_dedupe)
+    monkeypatch.setattr(pipeline, "maybe_reorder", fake_maybe_reorder)
+
+    env = {
+        "SPOTIFY_CLIENT_ID": "i", "SPOTIFY_CLIENT_SECRET": "s",
+        "SPOTIFY_REFRESH_TOKEN": "r", "SPOTIFY_PLAYLIST_ID": "pl",
+        "DO_SPOTIFY_ADDS": "0",   # dry-run
+        "DO_EMAIL": "0",          # keep SMTP out of the test entirely
+    }
+    now = datetime(2026, 7, 23, 10, 30, tzinfo=PT)  # Thursday, past both gates
+
+    session = RoutingSession()
+    pipeline.main(session=session, env=env, now=now)
+
+    assert call_order == ["dedupe", "reorder"], (
+        f"expected dedupe before reorder, got {call_order}"
+    )

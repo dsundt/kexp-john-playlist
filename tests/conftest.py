@@ -23,7 +23,9 @@ class FakeSession:
     def _next(self, method, url, **kw):
         self.calls.append({"method": method, "url": url, **kw})
         q = self.queues[method]
-        return q.pop(0) if q else FakeResponse(200, {})
+        if not q:
+            raise AssertionError(f"unqueued {method.upper()} {url}")
+        return q.pop(0)
     def get(self, url, **kw): return self._next("get", url, **kw)
     def post(self, url, **kw): return self._next("post", url, **kw)
     def put(self, url, **kw): return self._next("put", url, **kw)

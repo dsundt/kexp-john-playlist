@@ -7,7 +7,8 @@ morning-show (7-10am PT, weekdays, John Richards) window logic, and audit-feed
 writes — but routes all HTTP through the tested kexp.* clients and adds the new
 safety behaviors:
 
-  * dedupe via snapshot-guarded positional DELETE (never full-replace/truncate);
+  * dedupe via snapshot-guarded uri-based DELETE + kept-copy re-add (never
+    full-replace/truncate; only removed uris are touched);
   * reorder via backup -> replace_with_verify -> auto-restore on verify failure;
   * add-time dedupe (skip candidates already in the playlist by id/ISRC/safe key);
   * a failure-alert email wrapped around the whole run (then re-raise so the
@@ -219,30 +220,41 @@ def build_membership(items):
 
 
 # --------------------------------------------------------------------------- #
-# Dedupe (positional DELETE, snapshot-guarded, backup-first).
+# Dedupe (uri-based DELETE + kept-copy re-add, snapshot-guarded, backup-first).
 # --------------------------------------------------------------------------- #
-def _positions_to_uri_positions(items, positions):
-    """Convert flat playlist positions into [(uri, [positions...]), ...].
+def _positions_to_uri_removals(items, positions):
+    """Convert flat playlist positions into per-uri removal descriptors.
 
-    Uses the fetched items list to resolve each position -> uri, grouping the
-    positions of the same uri together (Spotify's DELETE body shape).
+    Spotify's DELETE removes ALL occurrences of a supplied uri (per-uri
+    `positions` are no longer honored), so we describe each removed uri by how
+    many copies it has (`total_count`) and how many to drop (`remove_count`).
+    `SpotifyClient.remove_duplicate_uris` deletes the uri then re-adds
+    `total_count - remove_count` kept copies. Returns
+    ``[{"uri", "remove_count", "total_count"}, ...]``.
     """
     pos_to_uri = {it["position"]: it["uri"] for it in items}
-    grouped = {}
+    total_by_uri = {}
+    for it in items:
+        total_by_uri[it["uri"]] = total_by_uri.get(it["uri"], 0) + 1
+    remove_by_uri = {}
     order = []
     for pos in positions:
         uri = pos_to_uri.get(pos)
         if uri is None:
             continue
-        if uri not in grouped:
-            grouped[uri] = []
+        if uri not in remove_by_uri:
+            remove_by_uri[uri] = 0
             order.append(uri)
-        grouped[uri].append(pos)
-    return [(uri, grouped[uri]) for uri in order]
+        remove_by_uri[uri] += 1
+    return [
+        {"uri": uri, "remove_count": remove_by_uri[uri],
+         "total_count": total_by_uri.get(uri, remove_by_uri[uri])}
+        for uri in order
+    ]
 
 
 def run_dedupe(client, token, playlist_id, backup_dir, *, now_str, dry_run):
-    """Fetch -> classify -> (live) backup + snapshot-guarded DELETE.
+    """Fetch -> classify -> (live) backup + snapshot-guarded uri-based DELETE.
 
     Returns (removed_count, report). In dry_run performs NO mutating client call
     and writes NO backup, but still returns what WOULD be removed + the
@@ -257,8 +269,8 @@ def run_dedupe(client, token, playlist_id, backup_dir, *, now_str, dry_run):
         backup_mod.write_backup(
             backup_dir, snapshot_id, [it["uri"] for it in items], now_str=now_str
         )
-        uri_positions = _positions_to_uri_positions(items, plan.remove_positions)
-        client.remove_positions(token, snapshot_id, uri_positions)
+        removals = _positions_to_uri_removals(items, plan.remove_positions)
+        client.remove_duplicate_uris(token, snapshot_id, removals)
 
     return removed, plan.report
 

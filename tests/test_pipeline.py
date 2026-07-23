@@ -24,9 +24,12 @@ def _dup_playlist_response():
     return FakeResponse(200, {"snapshot_id": "S1", "items": [{"track": tr}, {"track": tr}]})
 
 
-def test_run_dedupe_removes_and_backs_up(fake_session, tmp_path):
+def test_run_dedupe_same_uri_dup_deletes_then_readds_and_backs_up(fake_session, tmp_path):
+    # The playlist holds the SAME uri twice (exact id dup) -> keep 1, so the
+    # uri-based removal must DELETE the uri then re-add one kept copy.
     fake_session.queue("get", _dup_playlist_response())
     fake_session.queue("delete", FakeResponse(200, {"snapshot_id": "S2"}))
+    fake_session.queue("post", FakeResponse(201, {"snapshot_id": "S3"}))
     sc = SpotifyClient(fake_session, _cfg(), sleep=lambda *_: None)
 
     backup_dir = str(tmp_path / "backups")
@@ -36,17 +39,52 @@ def test_run_dedupe_removes_and_backs_up(fake_session, tmp_path):
 
     assert removed == 1
     assert report == []
-    # DELETE issued with the earliest-kept snapshot + the dup position.
+    # DELETE issued uri-based (no positions) with the earliest-kept snapshot.
     delete_calls = [c for c in fake_session.calls if c["method"] == "delete"]
     assert len(delete_calls) == 1
     body = delete_calls[0]["json"]
     assert body["snapshot_id"] == "S1"
-    assert {"uri": "spotify:track:a", "positions": [1]} in body["tracks"]
+    assert body["tracks"] == [{"uri": "spotify:track:a"}]
+    # One kept copy re-added (total_count=2, remove_count=1 -> keep=1).
+    post_calls = [c for c in fake_session.calls if c["method"] == "post"]
+    assert len(post_calls) == 1
+    assert post_calls[0]["json"] == {"uris": ["spotify:track:a"]}
     # Backup written before the delete.
     bpath = os.path.join(backup_dir, "playlist-20260723T103000.json")
     assert os.path.exists(bpath)
     payload = json.load(open(bpath))
     assert payload["count"] == 2 and payload["snapshot_id"] == "S1"
+
+
+def _distinct_dup_playlist_response():
+    """Two DISTINCT uris that safe-key collide (same normalized title/artist) ->
+    the removed uri appears once, so it's a pure DELETE with NO re-add."""
+    keep = {"uri": "spotify:track:a", "id": "a", "name": "Song",
+            "artists": [{"name": "X"}], "album": {"release_date": "2020"},
+            "external_ids": {"isrc": "I1"}}
+    dup = {"uri": "spotify:track:b", "id": "b", "name": "Song",
+           "artists": [{"name": "X"}], "album": {"release_date": "2020"},
+           "external_ids": {"isrc": "I2"}}
+    return FakeResponse(200, {"snapshot_id": "S1", "items": [{"track": keep}, {"track": dup}]})
+
+
+def test_run_dedupe_distinct_uri_deletes_no_readd(fake_session, tmp_path):
+    fake_session.queue("get", _distinct_dup_playlist_response())
+    fake_session.queue("delete", FakeResponse(200, {"snapshot_id": "S2"}))
+    sc = SpotifyClient(fake_session, _cfg(), sleep=lambda *_: None)
+
+    backup_dir = str(tmp_path / "backups")
+    removed, report = run_dedupe(
+        sc, "tok", "pl", backup_dir, now_str="20260723T103000", dry_run=False
+    )
+
+    assert removed == 1
+    delete_calls = [c for c in fake_session.calls if c["method"] == "delete"]
+    post_calls = [c for c in fake_session.calls if c["method"] == "post"]
+    assert len(delete_calls) == 1
+    assert delete_calls[0]["json"]["tracks"] == [{"uri": "spotify:track:b"}]
+    assert delete_calls[0]["json"]["snapshot_id"] == "S1"
+    assert post_calls == []   # distinct uri appears once -> no re-add
 
 
 def test_run_dedupe_dry_run_mutates_nothing(fake_session, tmp_path):

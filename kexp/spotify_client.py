@@ -1,9 +1,13 @@
 """Spotify client: auth, ISRC-aware read, snapshot-guarded safe DELETE, verified reorder.
 
-Playlist mutations are intentionally NOT full-replace for dedupe: `remove_positions`
-issues positional DELETEs (batched, all carrying the SAME snapshot_id) so a
-duplicate-removal pass can never truncate the playlist to whatever page happened to
-be read. `replace_with_verify` is for reorder only, and re-fetches + compares the
+Playlist mutations are intentionally NOT full-replace for dedupe:
+`remove_duplicate_uris` issues uri-based DELETEs (batched, all carrying the SAME
+snapshot_id). Spotify's `DELETE /playlists/{id}/tracks` no longer honors a per-uri
+`positions` array — supplying a `uri` removes ALL of its occurrences — so dedupe
+deletes each duplicated uri outright and, for the rare same-uri exact dup, re-adds
+the copies it means to keep. Only uris that appear in the removal set are ever
+touched, so this can never truncate the playlist to whatever page happened to be
+read. `replace_with_verify` is for reorder only, and re-fetches + compares the
 resulting URI set before returning success — callers must back up first and restore
 from that backup if `PlaylistVerifyError` is raised.
 """
@@ -104,22 +108,49 @@ class SpotifyClient:
                 break
         return snapshot_id, items
 
-    def remove_positions(self, token, snapshot_id, uri_positions) -> None:
-        """Remove tracks by (uri, positions) pairs, batched to <=100 objects per DELETE.
+    def remove_duplicate_uris(self, token, snapshot_id, removals) -> None:
+        """Remove duplicate occurrences of uris, uri-based (NOT positional).
 
-        Every batch carries the SAME snapshot_id so Spotify rejects (rather than
-        silently reinterprets) a stale request — this is what makes dedupe
-        non-truncating regardless of how many batches it takes.
+        `removals` is a list of dicts, one per distinct uri to touch::
+
+            {"uri": str, "remove_count": int, "total_count": int}
+
+        `total_count` is how many times that uri occurs in the playlist and
+        `remove_count` how many of those to drop. Spotify's DELETE endpoint
+        removes ALL occurrences of a supplied uri (the per-uri `positions` array
+        is no longer honored), so for each uri we:
+
+          * DELETE the uri outright (removes all `total_count` copies), batching
+            <=100 uris per call, every batch carrying the SAME snapshot_id; then
+          * if `keep = total_count - remove_count > 0`, re-add `keep` copies with
+            POST (batched <=100). This path only fires for same-uri exact dupes,
+            which add-time dedupe prevents — the pre-write backup is the net.
+
+        Only uris present in `removals` are ever touched, so the pass cannot
+        truncate the playlist regardless of how many batches it takes.
         """
         headers = self._auth_headers(token)
         url = PLAYLIST_ITEMS_TPL.format(playlist_id=self.config.playlist_id)
-        objects = [{"uri": uri, "positions": positions} for uri, positions in uri_positions]
-        for i in range(0, len(objects), 100):
-            batch = objects[i:i + 100]
+
+        delete_objs = [{"uri": r["uri"]} for r in removals]
+        for i in range(0, len(delete_objs), 100):
+            batch = delete_objs[i:i + 100]
             body = {"tracks": batch, "snapshot_id": snapshot_id}
             request_json(
                 self.session, "delete", url, expect=200, sleep=self.sleep,
                 headers=headers, json=body, timeout=30,
+            )
+
+        readd = []
+        for r in removals:
+            keep = r["total_count"] - r["remove_count"]
+            if keep > 0:
+                readd.extend([r["uri"]] * keep)
+        for i in range(0, len(readd), 100):
+            batch = readd[i:i + 100]
+            request_json(
+                self.session, "post", url, expect=201, sleep=self.sleep,
+                headers=headers, json={"uris": batch}, timeout=30,
             )
 
     def reorder(self, token, ordered_uris) -> None:

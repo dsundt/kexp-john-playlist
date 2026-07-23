@@ -41,11 +41,11 @@ def send_failure_email(config, *, subject, body, smtp_factory=smtplib.SMTP) -> b
 
     with smtp_factory(config.smtp_host, config.smtp_port, timeout=30) as s:
         s.ehlo()
-        try:
-            s.starttls()
-            s.ehlo()
-        except Exception:
-            pass
+        # STARTTLS must succeed before we authenticate — otherwise login() would
+        # transmit the SMTP credentials in plaintext. If it raises, abort the
+        # send entirely (propagate) rather than fall back to an unencrypted login.
+        s.starttls()
+        s.ehlo()
         s.login(config.smtp_username, config.smtp_password)
         s.send_message(msg)
 

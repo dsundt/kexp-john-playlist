@@ -1,4 +1,5 @@
 import json
+import smtplib
 from pathlib import Path
 
 from kexp.config import Config
@@ -55,6 +56,48 @@ def test_send_failure_email_sends_via_injected_smtp_factory():
     assert len(FakeSMTP.sent) == 1
     assert FakeSMTP.sent[0]["Subject"] == "Boom"
     assert FakeSMTP.sent[0]["To"] == "to@example.com"
+
+
+class FakeSMTPStartTLSFails:
+    """STARTTLS raises — a send here would leak credentials in plaintext."""
+    def __init__(self, host, port, timeout=30):
+        self.logged_in = False
+        self.sent = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self):
+        raise smtplib.SMTPException("STARTTLS not supported")
+
+    def login(self, username, password):
+        self.logged_in = True
+
+    def send_message(self, msg):
+        self.sent.append(msg)
+
+
+def test_send_failure_email_aborts_and_never_logs_in_plaintext_when_starttls_fails():
+    instances = []
+
+    def factory(host, port, timeout=30):
+        inst = FakeSMTPStartTLSFails(host, port, timeout)
+        instances.append(inst)
+        return inst
+
+    cfg = _config()
+    import pytest
+    with pytest.raises(smtplib.SMTPException):
+        send_failure_email(cfg, subject="Boom", body="It broke", smtp_factory=factory)
+    # STARTTLS failed -> must NOT have logged in or sent over an unencrypted channel.
+    assert instances and instances[0].logged_in is False
+    assert instances[0].sent == []
 
 
 def test_send_failure_email_false_when_smtp_config_missing():

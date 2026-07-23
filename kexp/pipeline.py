@@ -531,11 +531,9 @@ def _send_email(config, subject, body, smtp_factory=smtplib.SMTP):
     msg.set_content(body)
     with smtp_factory(config.smtp_host, config.smtp_port, timeout=30) as s:
         s.ehlo()
-        try:
-            s.starttls()
-            s.ehlo()
-        except Exception:
-            pass
+        # STARTTLS must succeed before login() or credentials go out in plaintext.
+        s.starttls()
+        s.ehlo()
         s.login(config.smtp_username, config.smtp_password)
         s.send_message(msg)
 

@@ -1,0 +1,90 @@
+KEXP playlist near-duplicate review (same song, different Spotify track id)
+============================================================
+
+ 1. Al Green — everybody hurts
+      pos 2794  id=43y7ax8AhUk035FqJPXcdK  'Everybody Hurts'
+      pos 3819  id=4ZWhCwiWlQJtk11fW0zgK8  'Everybody Hurts'
+
+ 2. Anna von Hausswolff — stardust
+      pos 3210  id=6KWt47cpOrc0mWWrNmb6lg  'Stardust'
+      pos 3512  id=1Kl98pNTsvegkWpUKIO6bH  'Stardust'
+
+ 3. Camper Van Beethoven — take the skinheads bowling
+      pos  656  id=0Dg2K34KTQ2viClnTE8JDK  'Take the Skinheads Bowling'
+      pos  674  id=4uLnk7e2JHxDP9eG7vXyPq  'Take the Skinheads Bowling'
+
+ 4. Dove Ellis — love is
+      pos 2966  id=4KU1tXxB4PiiVDhWQvA0Gi  'Love Is'
+      pos 3381  id=7zuTE1Eah3KFnYb6ybC1dB  'Love Is'
+
+ 5. Eaves Wilder — everybody talks
+      pos 3100  id=7mqTdRDE6VeMJBKAiHyef2  'Everybody Talks'
+      pos 3752  id=7m17zp5oVAe5xMoj9ErRuq  'Everybody Talks'
+
+ 6. Frankie Goes To Hollywood — relax
+      pos 1256  id=7d9sF2kfIsqaSfB5TJfvXP  'Relax (Come Fighting)'
+      pos 1723  id=5WJ92b9eMC0xZ7BaukU1E4  'Relax'
+
+ 7. Ismay — american flag
+      pos 3697  id=17zkF93XlmF1b5zLC1YAYi  'American Flag'
+      pos 3736  id=68Grn4OEwHpjnPQgpUi6Wy  'American Flag'
+
+ 8. Jane's Addiction — stop
+      pos 1024  id=4COsndfUNxn85B4ZipFUGy  'Stop'
+      pos 1025  id=7F0dwqgKzlaIRrngChBRAc  'Stop!'
+
+ 9. Jeff Buckley — last goodbye
+      pos 1368  id=0y5CnV2idm2KkQEudDjfDT  'Last Goodbye'
+      pos 1370  id=18pP9yL90xVD5hSJXoLIXK  'Last Goodbye'
+
+10. Louis Armstrong — what a wonderful world
+      pos   84  id=29U7stRjqHU6rMiS8BfaI9  'What A Wonderful World'
+      pos 2671  id=0EWVdaFMILyp6QAyJn1tQ0  'What A Wonderful World'
+
+11. Michael Kiwanuka — cold little heart
+      pos 2460  id=0qprlw0jfsW4H9cG0FFE0Z  'Cold Little Heart'
+      pos 2486  id=7KX65PC1UZuImsUInThbav  'Cold Little Heart - Radio Edit'
+
+12. Nation of Language — inept apollo
+      pos 3030  id=6YE0zn10XApgoCMaFeSj7b  'Inept Apollo'
+      pos 3226  id=0YikZXNNkvNlPInLAPMV06  'Inept Apollo'
+
+13. Nightbus — angles mortz
+      pos 2910  id=3qiK3fx9jcGOItvuAVprx4  'Angles Mortz'
+      pos 3385  id=6Nqc3DXnxBXcNnemxr95aU  'Angles Mortz'
+
+14. Nina Simone — feeling good
+      pos   36  id=6Rqn2GFlmvmV4w9Ala0I1e  'Feeling Good'
+      pos 2686  id=7u6HRyEoWlUkoEsbQxX7sa  'Feeling Good'
+
+15. Packaging, cindygod — running through the airport
+      pos 3378  id=2EyPQrBM0zOCeQjkP9FOKK  'Running Through the Airport (feat. cindygod)'
+      pos 3461  id=3qC3ozVpH3U6CyLBJZUUTR  'Running Through the Airport (feat. cindygod)'
+
+16. R.E.M. — finest worksong
+      pos  754  id=0O7f4jLccME6ZfYfJ1twsX  'Finest Worksong'
+      pos  759  id=0D4lZI5jBVVB1PUqkkZuNa  'Finest Worksong - Remastered'
+
+17. Tears For Fears — mad world
+      pos  543  id=0Qv7xi6uPSqH2k82tOkGSt  'Mad World'
+      pos 2617  id=004i5DQpe6BIvOaxT7aKTS  'Mad World'
+
+18. The Cranberries — dreams
+      pos 1285  id=47aJO6d2O0Shjby4CRq6rJ  'Dreams'
+      pos 1971  id=0cli6LmLOFcYqx0JrqAe0k  'Dreams'
+
+19. The Magnetic Fields — all my little words
+      pos 1658  id=3KvTZQPpzPw9UKxaGlJkBs  'All My Little Words'
+      pos 1659  id=41Kh844iHIhSkf16WWh6He  'All My Little Words'
+
+20. The New Pornographers — ballad of the last payphone
+      pos 2930  id=7vyW4yBldhKGnUsPPDSUWV  'Ballad of the Last Payphone'
+      pos 3810  id=1TF4p5bdfEWoB6VEHC8nqk  'Ballad of the Last Payphone'
+
+21. Twin Shadow — dominoes
+      pos 2982  id=5Tgg3YgkGLnT9dxR2Qpqy1  'Dominoes'
+      pos 3064  id=5cgK6Kvd1rLMqLbZIwytnh  'Dominoes'
+
+22. Wolf Alice — white horses
+      pos 3552  id=5FxdLsAmaOo8ofpNvsSun5  'White Horses'
+      pos 3668  id=28lKZhxCDxqJEPyK8G4y91  'White Horses'

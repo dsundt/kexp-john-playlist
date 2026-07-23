@@ -1,0 +1,19 @@
+name: Tests
+
+# Runs the pytest suite on pushes and PRs. This is separate from kexp.yml so it
+# never triggers the live playlist run (that workflow stays schedule/dispatch only).
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest

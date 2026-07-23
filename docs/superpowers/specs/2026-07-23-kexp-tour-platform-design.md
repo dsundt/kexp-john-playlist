@@ -65,7 +65,7 @@ kexp/
   feed.py           # escape / self-heal / trim RSS (logic already shipped in main)
   dedupe.py         # exact(id/ISRC) + near-dupe classification (safe vs version-distinct)
   backup.py         # snapshot playlist before writes + prune old backups
-  alerting.py       # failure email + last-success heartbeat
+  alerting.py       # failure email + heartbeat (data/heartbeat.json)
   emailer.py        # daily summary + near-dupe operator report section
   pipeline.py       # orchestration: backfill / live / dedupe / reorder / email
 scripts/run.py      # thin entrypoint -> kexp.pipeline.main()
@@ -78,9 +78,12 @@ The current `replace_playlist_with_order()` does `PUT {first 100}` (wiping the p
 to 100 tracks) then re-appends the rest across ~38 `POST`s — a mid-sequence failure
 permanently truncates the 3,835-track playlist.
 
-- **Dedupe → `DELETE /playlists/{id}/tracks`** with `{tracks:[{uri, positions:[...]}], snapshot_id}`,
-  batched ≤100. Removes only the duplicate positions; the rest of the playlist is never
-  touched. Truncation is structurally impossible.
+- **Dedupe → `DELETE /playlists/{id}/tracks`** with `{tracks:[{uri}], snapshot_id}`,
+  batched ≤100. Spotify's DELETE removes ALL occurrences of a supplied uri (the per-uri
+  `positions` array is no longer honored), so dedupe deletes each duplicated uri and, for
+  the rare same-uri exact dup, re-adds the copies it means to keep (`keep = total − remove`,
+  POST batched ≤100). Only uris in the removal set are ever touched; the rest of the
+  playlist is never affected. Truncation is structurally impossible.
 - **Reorder** (must fully rewrite to sort by year) keeps a replace, but wrapped:
   **backup → replace → verify → auto-restore.** After replacing, re-read; if the track
   set/count doesn't match expected, restore from the backup snapshot and fire an alert.
@@ -93,7 +96,8 @@ permanently truncates the 3,835-track playlist.
   version keyword (remaster/live/edit/radio/mono/feat) → NOT auto-removed; listed in the
   operator report for a human decision.
 - **One-time cleanup:** applies to the current playlist — 0 exact, 22 near-dup groups
-  (~18 auto-safe, ~4 reported).
+  (19 auto-safe removes, 3 reported: Relax, Cold Little Heart, Finest Worksong). Stop/Stop!
+  differs only by punctuation → SAFE auto-remove per the design rule, not reported.
 
 ### Add-time dedupe
 Fetch the live playlist's id-set + ISRC-set + safe-normalized-key-set once per run;
@@ -110,7 +114,8 @@ reorder verify/restore.
 - `main()` wrapped: any unhandled exception → failure email via existing SMTP secrets →
   re-raise (Action still shows red). Would have caught the day-long revoked-token outage
   on day one.
-- Write `data/last_success.json` (timestamp + counts) each clean run — a watchable heartbeat.
+- Write `data/heartbeat.json` (timestamp + counts) each clean run — a watchable heartbeat
+  (this is the canonical filename the code writes).
 
 ### Better Spotify matching
 `matching.py` ordered fallback: (1) strict `track:"x" artist:"y"`; (2) retry with
@@ -127,7 +132,7 @@ requirements, `.gitignore`.
 `pytest`, HTTP mocked, no live API:
 - config parsing; matching normalization + fallbacks + ISRC path
 - exact(id/ISRC) + near-dupe classification (safe vs version-distinct)
-- safe-DELETE batching + positions + snapshot guard
+- safe uri-based DELETE batching + kept-copy re-add + snapshot guard
 - reorder verify/restore (simulate truncation → assert restore + alert)
 - backup write + prune
 - add-time dedupe skip logic

@@ -30,7 +30,9 @@ def render_daily(rows, near_dupe_report, *, date_str, prefix):
                 sorted({item.get("name", "") for item in group.get("items", [])})
             )
             dupe_lines.append(f"- {artist}: {names}")
-        body += "\nPossible duplicates to review:\n" + "\n".join(dupe_lines) + "\n"
+        body += ("\nPossible duplicates to review (version-distinct near-dupes among "
+                 "existing playlist tracks, as of this run's playlist read):\n"
+                 + "\n".join(dupe_lines) + "\n")
 
     body += "\n–––\nThis email was sent by your GitHub Action."
 

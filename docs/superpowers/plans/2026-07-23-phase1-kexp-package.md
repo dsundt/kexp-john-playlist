@@ -4,7 +4,7 @@
 
 **Goal:** Refactor the single-file KEXP→Spotify bot into a tested `kexp` package and eliminate the playlist-truncation risk via snapshot-guarded DELETE-based dedupe, ISRC+hybrid near-dupe handling, add-time dedupe, backups, and outage alerting.
 
-**Architecture:** Extract cohesive modules under `kexp/` behind small interfaces; `scripts/run.py` becomes a thin entrypoint calling `kexp.pipeline.main()`. Playlist mutations move from full-replace to positional `DELETE` (dedupe) and backup→replace→verify→restore (reorder). Pure logic (matching, dedupe classification, feed) is unit-tested with no network; HTTP clients are tested with a mocked session.
+**Architecture:** Extract cohesive modules under `kexp/` behind small interfaces; `scripts/run.py` becomes a thin entrypoint calling `kexp.pipeline.main()`. Playlist mutations move from full-replace to uri-based `DELETE` + kept-copy re-add (dedupe) and backup→replace→verify→restore (reorder). Spotify's `DELETE /playlists/{id}/tracks` removes ALL occurrences of a supplied uri (per-uri `positions` are no longer honored), so dedupe deletes each duplicated uri and re-adds the copies it means to keep; only removed uris are touched, so it is non-truncating. Pure logic (matching, dedupe classification, feed) is unit-tested with no network; HTTP clients are tested with a mocked session.
 
 **Tech Stack:** Python 3.11, `requests` (pinned 2.32.5), `pytest` (dev only). GitHub Actions runner. No new runtime deps.
 
@@ -12,7 +12,7 @@
 
 - Python 3.11; runtime dependency is `requests==2.32.5` only (verbatim from `requirements.txt`).
 - Never log secret values — lengths only (existing rule in `refresh_access_token`).
-- Playlist mutations MUST be non-truncating: dedupe via positional `DELETE` with `snapshot_id`; reorder via backup→replace→verify→auto-restore.
+- Playlist mutations MUST be non-truncating: dedupe via uri-based `DELETE` with `snapshot_id` (+ re-add of kept copies for same-uri dupes); reorder via backup→replace→verify→auto-restore.
 - Dedupe keeps the EARLIEST occurrence; auto-remove only exact (track id OR ISRC) and "safe" near-dupes (identical after stripping case/punctuation). Version-distinct near-dupes (differ by remaster/live/edit/radio/mono/feat) are REPORTED, never auto-removed.
 - "My Artists" = artists in the user's playlist (flag name `is_my_artist` in new code; `in_playlist` retained in data files already on disk).
 - `scripts/run.py` must remain the workflow entrypoint (`python scripts/run.py`) with unchanged env-var contract.
@@ -24,7 +24,7 @@
 
 **Files:**
 - Create: `kexp/__init__.py`, `tests/__init__.py`, `tests/conftest.py`, `requirements-dev.txt`, `pytest.ini`
-- Modify: `.github/workflows/kexp.yml` (add a `test` job)
+- Modify: CI workflow to run the suite. **As shipped, the pytest job lives in a SEPARATE `.github/workflows/tests.yml`** (push + PR), kept apart from `kexp.yml` so the test run never triggers the live playlist workflow (which stays schedule/dispatch-only). The step block below applies to `tests.yml`.
 
 **Interfaces:**
 - Produces: `tests/conftest.py::fake_session` fixture returning a `FakeSession` whose `.get/.post/.put/.delete` return queued `FakeResponse(status_code, json_body, headers)` objects and record calls in `.calls`.
@@ -79,7 +79,7 @@ class FakeSession:
 def fake_session():
     return FakeSession()
 ```
-- [ ] **Step 4: Add a `test` job to `.github/workflows/kexp.yml`** (before the existing `build` job's steps run script; new independent job):
+- [ ] **Step 4: Add the pytest job in `.github/workflows/tests.yml`** (a standalone workflow, NOT a job inside `kexp.yml`, so tests never trigger the live run). It sets `permissions: contents: read` and `persist-credentials: false` on checkout:
 ```yaml
   test:
     runs-on: ubuntu-latest
@@ -245,13 +245,13 @@ def test_classify_paths():
 - Produces class `SpotifyClient(session, config, sleep=time.sleep)` with:
   - `refresh_token() -> str` (retry + error-body logging; fail-fast 4xx).
   - `fetch_playlist(token) -> (snapshot_id, items)` where each item includes `uri,id,isrc,name,artist,album_release_date,position` (ISRC from `track.external_ids.isrc`).
-  - `remove_positions(token, snapshot_id, uri_positions: list[(uri, list[int])]) -> None` — batches ≤100 objects, `DELETE` with `{tracks:[{uri,positions}], snapshot_id}`.
+  - `remove_duplicate_uris(token, snapshot_id, removals: list[{uri, remove_count, total_count}]) -> None` — batches ≤100 uris, `DELETE` with `{tracks:[{uri}], snapshot_id}` (per-uri `positions` are NO LONGER honored by Spotify — a uri removes ALL its occurrences); for same-uri dupes where `keep = total_count - remove_count > 0`, re-adds the kept copies via `POST {uris:[uri]*keep}`. (Superseded the earlier positional `remove_positions`.)
   - `reorder(token, ordered_uris) -> None` — caller-supplied; NOT used directly by dedupe.
   - `replace_with_verify(token, ordered_uris, expected_set) -> bool` — backup done by caller; PUT first100+POST rest, then re-`fetch_playlist`; if the resulting uri-set != `expected_set` raise `PlaylistVerifyError` (caller restores + alerts).
 
-- [ ] **Step 1: Failing test** — safe delete batches positions and includes snapshot_id:
+- [ ] **Step 1: Failing test** — uri-based delete carries snapshot_id and re-adds kept copies only for same-uri dupes:
 ```python
-def test_remove_positions_batches_with_snapshot(fake_session):
+def test_remove_duplicate_uris_distinct_deletes_no_readd(fake_session):
     from kexp.spotify_client import SpotifyClient
     from kexp.config import Config
     from tests.conftest import FakeResponse
@@ -259,15 +259,16 @@ def test_remove_positions_batches_with_snapshot(fake_session):
         "SPOTIFY_REFRESH_TOKEN":"r","SPOTIFY_PLAYLIST_ID":"pl"})
     fake_session.queue("delete",FakeResponse(200,{"snapshot_id":"S2"}))
     sc=SpotifyClient(fake_session,c,sleep=lambda *_:None)
-    sc.remove_positions("tok","S1",[("u1",[1]),("u2",[3,4])])
+    sc.remove_duplicate_uris("tok","S1",[{"uri":"u1","remove_count":1,"total_count":1}])
     call=fake_session.calls[-1]
     assert call["method"]=="delete"
     body=call["json"]
     assert body["snapshot_id"]=="S1"
-    assert {"uri":"u1","positions":[1]} in body["tracks"]
+    assert body["tracks"]==[{"uri":"u1"}]          # uri-only, no positions
+    assert not any(c["method"]=="post" for c in fake_session.calls)  # no re-add
 ```
 - [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement** the class. `refresh_token` mirrors the shipped retry/error-body function but on `self.session`. `fetch_playlist` paginates GET, reads `external_ids.isrc`, tracks integer `position`, returns snapshot from the first page. `remove_positions` chunks the `uri_positions` list into ≤100-object DELETE bodies, each with the SAME `snapshot_id`. `replace_with_verify` does the PUT/POST then re-fetch + set compare, raising `PlaylistVerifyError` on mismatch. Define `class PlaylistVerifyError(RuntimeError)`.
+- [ ] **Step 3: Implement** the class. `refresh_token` mirrors the shipped retry/error-body function but on `self.session`. `fetch_playlist` paginates GET, reads `external_ids.isrc`, tracks integer `position`, returns snapshot from the first page. `remove_duplicate_uris` chunks the `removals` uris into ≤100-object DELETE bodies (`{tracks:[{uri}], snapshot_id}`, each with the SAME `snapshot_id`), then re-adds `keep = total_count - remove_count` copies via POST for any same-uri dup. `replace_with_verify` does the PUT/POST then re-fetch + set compare, raising `PlaylistVerifyError` on mismatch. Define `class PlaylistVerifyError(RuntimeError)`.
 - [ ] **Step 4: Run** → PASS. Add a `replace_with_verify` test where the re-fetch returns a short set → raises `PlaylistVerifyError`.
 - [ ] **Step 5: Commit** `feat: kexp.spotify_client (auth, ISRC read, safe DELETE, verified reorder)`.
 
@@ -339,9 +340,9 @@ def test_remove_positions_batches_with_snapshot(fake_session):
 
 **Interfaces:**
 - Consumes: all modules above.
-- Produces: `run_dedupe(client, token, playlist_id) -> (removed, report)` — fetch playlist, `classify`, backup, `remove_positions` for `plan.remove_positions`, return counts + report; `main()` — wraps the whole run in try/except → `alerting.send_failure_email` + re-raise; writes heartbeat on success; live/backfill add path calls `matching.search_best` and skips add-time dupes using the pre-fetched id/isrc/safe-key sets.
+- Produces: `run_dedupe(client, token, playlist_id, backup_dir, *, now_str, dry_run) -> (removed, report)` (real shipped signature) — fetch playlist, `classify`, backup, convert `plan.remove_positions` into per-uri `{uri, remove_count, total_count}` removals and call `remove_duplicate_uris`, return counts + report; `main()` — wraps the whole run in try/except → `alerting.send_failure_email` + re-raise; writes heartbeat on success; live/backfill add path calls `matching.search_best` and skips add-time dupes using the pre-fetched id/isrc/safe-key sets.
 
-- [ ] **Step 1: Failing test** for `run_dedupe`: seed a `SpotifyClient` (fake session) whose `fetch_playlist` returns items with one exact dup; assert `remove_positions` was called with that position and a backup file was written.
+- [ ] **Step 1: Failing test** for `run_dedupe`: seed a `SpotifyClient` (fake session) whose `fetch_playlist` returns items with one exact dup; assert a uri-based DELETE was issued (and, for a same-uri dup, one kept copy re-added) and a backup file was written.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement** `run_dedupe` and the add-time-skip helper `build_membership(items) -> (ids, isrcs, safe_keys)`; wire `main()` to reuse the existing backfill/live/email/reorder flow but through the new modules, guarding time-gates as today.
 - [ ] **Step 4: Run** → PASS.
@@ -371,7 +372,7 @@ def test_remove_positions_batches_with_snapshot(fake_session):
 
 **Interfaces:** Consumes `kexp.dedupe.classify`.
 
-- [ ] **Step 1: Test** — feed a fixture representing the current 22 near-dup groups (from `near_dupe_review.txt`): assert `classify` auto-removes the ~18 safe ones and reports the ~4 version-distinct ones (Finest Worksong/Remastered, Cold Little Heart/Radio Edit, Stop/Stop!, Relax variants stay in `report`). This proves the first live run cleans exactly what we expect.
+- [ ] **Step 1: Test** — feed a fixture representing the current 22 near-dup groups (from `near_dupe_review.txt`): assert `classify` auto-removes the **19 safe** ones and **reports the 3** version-distinct ones. Reported (kept, never auto-removed): Frankie Goes To Hollywood — Relax (Come Fighting)/Relax; Michael Kiwanuka — Cold Little Heart/Radio Edit; R.E.M. — Finest Worksong/Remastered. **Stop vs Stop!** differ only by punctuation, which `normalize_title` strips, so per the design's rule (punctuation-only match = SAFE) it IS auto-removed (keeping the earliest), NOT reported. This proves the first live run cleans exactly what we expect.
 - [ ] **Step 2: Run** → PASS (implementation already exists from Task 5).
 - [ ] **Step 3: Commit** `test: verify one-time cleanup of current 22 near-dupes`.
 
@@ -381,7 +382,7 @@ def test_remove_positions_batches_with_snapshot(fake_session):
 
 - **Spec coverage:** package layout (Tasks 1–12), safe DELETE dedupe (Task 6), ISRC+hybrid (Tasks 4–5), add-time dedupe (Task 11), backup (Task 8), alerting (Task 9), better matching (Task 4), reorder verify/restore (Task 6 `replace_with_verify` + Task 11 wiring), one-time cleanup (Task 13), tests/dry-run (Tasks 0,12). ✔
 - **Placeholder scan:** every code step shows real code or a precise port of an already-shipped function. ✔
-- **Type consistency:** `classify`→`DedupePlan.remove_positions` consumed by `SpotifyClient.remove_positions(uri_positions)`; note Task 11 must convert `remove_positions` (flat positions) into `uri_positions` (uri→[positions]) using the items list — called out in Task 11 Step 3. ✔
+- **Type consistency:** `classify`→`DedupePlan.remove_positions` consumed by `SpotifyClient.remove_duplicate_uris(removals)`; note Task 11 converts `remove_positions` (flat positions) into per-uri `{uri, remove_count, total_count}` removals using the items list — called out in Task 11 Step 3. ✔
 
 ## Execution Handoff
 

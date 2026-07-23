@@ -63,15 +63,44 @@ def is_version_variant(a, b):
     return normalize_title(a) != normalize_title(b) and strip_version(a) == strip_version(b)
 
 
-def _pick_best(items, song):
+def _item_artist(it):
+    """Extract a candidate's artist string from either a Spotify `artists` list
+    (`[{"name": ...}]`) or a flat `artist` field."""
+    artists = it.get("artists")
+    if artists:
+        return ", ".join(a.get("name", "") for a in artists)
+    return it.get("artist", "") or ""
+
+
+def _artist_matches(cand_artist, query_artist):
+    """True when the normalized artists overlap (containment either way), so a
+    single-artist query still matches a `X, featured` candidate — but a wholly
+    different artist is rejected."""
+    qa = normalize_title(query_artist)
+    ca = normalize_title(cand_artist)
+    return bool(qa) and bool(ca) and (qa in ca or ca in qa)
+
+
+def _pick_best(items, artist, song):
+    """Return the best title match BY THE RIGHT ARTIST, or None.
+
+    Never returns an arbitrary `items[0]`: a candidate must (1) match the query
+    artist and (2) match the title either exactly (normalized) or after
+    version-stripping. If nothing qualifies, returns None so the caller logs
+    not_found instead of adding a wrong-artist/wrong-song track.
+    """
     target = normalize_title(song)
     target_stripped = strip_version(song)
 
-    exact = [it for it in items if normalize_title(it.get("name", "")) == target]
+    eligible = [it for it in items if _artist_matches(_item_artist(it), artist)]
+    if not eligible:
+        return None
+
+    exact = [it for it in eligible if normalize_title(it.get("name", "")) == target]
     if exact:
         return exact[0]
 
-    stripped_matches = [it for it in items if strip_version(it.get("name", "")) == target_stripped]
+    stripped_matches = [it for it in eligible if strip_version(it.get("name", "")) == target_stripped]
     if stripped_matches:
         def adds_unwanted_variant(it):
             name_norm = normalize_title(it.get("name", ""))
@@ -81,14 +110,16 @@ def _pick_best(items, song):
         stripped_matches.sort(key=adds_unwanted_variant)
         return stripped_matches[0]
 
-    return items[0] if items else None
+    return None
 
 
 def search_best(search_fn, artist, song):
     """Ordered fallback search: strict field query -> version-stripped query ->
-    loose query. Returns the first non-empty result's best-matching item,
-    preferring an exact normalized-title match and de-prioritizing items that
-    add live/remix wording not present in the query.
+    loose query. Returns the first query's best artist+title match, preferring an
+    exact normalized-title match and de-prioritizing items that add live/remix
+    wording not present in the query. A candidate must match the query artist and
+    title (allowing version differences) or None is returned — the loose query
+    can never add a wrong-artist track.
     """
     queries = [f"artist:{artist} track:{song}"]
 
@@ -102,7 +133,7 @@ def search_best(search_fn, artist, song):
         items = search_fn(query, {"type": "track", "limit": 10}) or []
         if not items:
             continue
-        best = _pick_best(items, song)
+        best = _pick_best(items, artist, song)
         if best is not None:
             return best
 

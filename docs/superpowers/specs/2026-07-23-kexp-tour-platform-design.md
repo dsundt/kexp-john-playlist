@@ -140,11 +140,19 @@ requirements, `.gitignore`.
 
 Runs locally (MC-side) into the canonical store as the single source of truth (fetch
 once; the Action publishes `data/artists.json` as the My-Artists set). Config:
-`SHOWS_ENABLE`, city/geo (Chicago), `SHOWS_RADIUS_MILES=30`, `SHOWS_WINDOW_DAYS=60`,
+`SHOWS_ENABLE`, origin (see below), `SHOWS_RADIUS_MILES=30`, `SHOWS_WINDOW_DAYS=60`,
 `JAMBASE_MONTHLY_CAP=900`. Secrets: `TICKETMASTER_API_KEY`, `JAMBASE_API_KEY`.
 
+**Reference origin (privacy-sensitive):** the geo center is the operator's HOME in
+Glencoe, IL — all distances and the radar fan out 30 miles from there. The exact
+street address / lat-lng is a CONFIGURED value in the local secret store
+(`SHOWS_ORIGIN_LAT`, `SHOWS_ORIGIN_LNG`, `SHOWS_ORIGIN_LABEL="Glencoe, IL"`) and is
+NEVER committed to this public repo. UI/email label it "Glencoe (home) · 30 mi" —
+never the street address. (Glencoe is ~20 mi N of downtown Chicago, so the 30-mi
+radius still reaches most Chicago venues plus the North Shore/North suburbs.)
+
 - **Provider interface** (`events/`): `map_to_canonical()` per source.
-  - `TicketmasterProvider` (primary): geo `geoPoint`(Chicago)+`radius=30`+`unit=miles`+
+  - `TicketmasterProvider` (primary): geo `geoPoint`(home origin)+`radius=30`+`unit=miles`+
     `classificationName=Music`+date window, paginated (~cheap vs 5k/day).
   - `JamBaseProvider` (backup, quota-guarded): geo lat/lng+radius via `/v3/events`;
     `data/jambase_usage.json` monthly counter hard-stops at cap (default 900). ~150/mo.
@@ -152,7 +160,7 @@ once; the Action publishes `data/artists.json` as the My-Artists set). Config:
     venue — a venue's FULL upcoming calendar, not limited to My Artists. Cached per venue.
 - **Merge + dedupe** across sources by normalized (artist, date, venue); TM wins ties.
 - **My-Artists filter** = membership against the playlist artist set (no per-artist calls).
-- **Daily email:** "Upcoming shows near Chicago (My Artists)" over a rolling 60-day
+- **Daily email:** "Upcoming shows near Glencoe (My Artists)" over a rolling 60-day
   window, newly-detected shows highlighted (tracked in `data/shows_seen.json`).
 - Tests: provider mappers (recorded fixtures), quota guard hard-stop, merge/dedupe,
   My-Artist filtering, venue-lookup cache, email rendering.
@@ -162,7 +170,8 @@ once; the Action publishes `data/artists.json` as the My-Artists set). Config:
 Direction: **v3 "Box Office × Radar"** mockup. MC page over the canonical store.
 - Desktop: left 1/3 ticket-card index (My Artists) | right column split — top 1/3
   **venue pane** (venue meta + next 5 shows at that room, ALL artists, My-Artist rows
-  marked), bottom 2/3 **radar** reacting to the selected card's location.
+  marked), bottom 2/3 **radar** centered on the Glencoe home origin (concentric 10/20/30-mi
+  rings), reacting to the selected card's location.
 - Mobile: one column — radar → venue pane → swipeable synced card deck + scrubber/jump.
 - Read-API filter-driven (date/distance/status/source/My-Artists/saved); single
   `setActive()` selection chokepoint.

@@ -221,7 +221,14 @@ def refresh_access_token():
     data = {"grant_type": "refresh_token", "refresh_token": REFRESH_TOKEN}
     last_exc = None
     for attempt in range(3):
-        r = SESSION.post(SPOTIFY_TOKEN_URL, data=data, auth=(CLIENT_ID, CLIENT_SECRET), timeout=20)
+        try:
+            r = SESSION.post(SPOTIFY_TOKEN_URL, data=data, auth=(CLIENT_ID, CLIENT_SECRET), timeout=20)
+        except requests.RequestException as e:
+            # No response yet (ConnectionError/Timeout/etc.) — retry rather than abort.
+            last_exc = e
+            print(f"[token-refresh] network error (attempt {attempt + 1}/3): {e}", file=sys.stderr)
+            time.sleep(2 * (attempt + 1))
+            continue
         if r.status_code == 200:
             return r.json()["access_token"]
         # Surface Spotify's error body so failures are actionable (never log the secrets).
@@ -280,11 +287,14 @@ def is_john_show(show_uri):
         r = SESSION.get(show_uri, timeout=15)
         r.raise_for_status()
         data = r.json()
-        hosts = data.get("hosts") or []
-        host_names = [h.lower() for h in (data.get("host_names") or [])]
-        result = (HOST_ID_JOHN in hosts) or any("john richards" in n for n in host_names)
-    except Exception:
-        result = False
+    except (requests.RequestException, ValueError) as e:
+        # Do NOT memoize failures: a transient error must not mark this show
+        # not-John for the rest of the run (would silently drop later plays).
+        print(f"[is_john_show] lookup failed for {show_uri}: {e}", file=sys.stderr)
+        return False
+    hosts = data.get("hosts") or []
+    host_names = [h.lower() for h in (data.get("host_names") or [])]
+    result = (HOST_ID_JOHN in hosts) or any("john richards" in n for n in host_names)
     _show_is_john_cache[show_uri] = result
     return result
 

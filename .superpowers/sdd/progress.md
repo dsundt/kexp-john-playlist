@@ -13,6 +13,6 @@ Branch: feat/2026-07-23-phase1-kexp-package
 - [x] Task 8: backup
 - [x] Task 9: alerting
 - [x] Task 10: emailer
-- [ ] Task 11: pipeline
-- [ ] Task 12: thin run.py + e2e
-- [ ] Task 13: cleanup verification test
+- [x] Task 11: pipeline
+- [x] Task 12: thin run.py + e2e
+- [x] Task 13: cleanup verification test

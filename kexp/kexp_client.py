@@ -29,11 +29,13 @@ class KexpClient:
         if show_uri in self._show_is_john_cache:
             return self._show_is_john_cache[show_uri]
         try:
-            r = self.session.get(show_uri, timeout=15)
-            r.raise_for_status()
+            # request_json retries transient 5xx / network errors with backoff, so a
+            # single blip no longer silently drops this show. Reaching the except means
+            # the outage persisted (or a 4xx / bad JSON).
+            r = request_json(self.session, "get", show_uri, expect=200, timeout=15)
             data = r.json()
         except (requests.RequestException, ValueError) as e:
-            # Do NOT memoize failures: a transient error must not mark this show
+            # Do NOT memoize failures: a persistent error must not mark this show
             # not-John for the rest of the run (would silently drop later plays).
             print(f"[is_john_show] lookup failed for {show_uri}: {e}", file=sys.stderr)
             return False

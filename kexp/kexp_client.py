@@ -3,6 +3,8 @@ import sys
 
 import requests
 
+from kexp.http import request_json
+
 KEXP_PLAYS_URL = "https://api.kexp.org/v2/plays/"
 HOST_ID_JOHN = 26
 
@@ -14,8 +16,11 @@ class KexpClient:
 
     def fetch_plays(self, after_iso, before_iso, limit=200) -> list:
         params = {"airdate_after": after_iso, "airdate_before": before_iso, "limit": limit}
-        r = self.session.get(KEXP_PLAYS_URL, params=params, timeout=30)
-        r.raise_for_status()
+        # Route through request_json so a transient KEXP 5xx / network error retries
+        # with backoff instead of crashing the whole run. api.kexp.org intermittently
+        # returns 502 Bad Gateway; a bare raise_for_status here failed the entire job.
+        r = request_json(self.session, "get", KEXP_PLAYS_URL, expect=200,
+                         params=params, timeout=30)
         return (r.json() or {}).get("results") or []
 
     def is_john_show(self, show_uri) -> bool:

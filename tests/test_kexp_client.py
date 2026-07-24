@@ -1,3 +1,4 @@
+import pytest
 import requests
 
 
@@ -48,3 +49,45 @@ def test_fetch_plays_returns_results(fake_session):
     assert call["params"]["airdate_after"] == "2026-01-01T00:00:00"
     assert call["params"]["airdate_before"] == "2026-01-01T01:00:00"
     assert call["params"]["limit"] == 200
+
+
+def test_fetch_plays_retries_transient_5xx_then_succeeds(fake_session, monkeypatch):
+    # Regression: a single KEXP 502 Bad Gateway used to crash the whole run
+    # (bare session.get + raise_for_status). fetch_plays now routes through
+    # request_json, which retries 5xx with backoff.
+    import kexp.http as http
+    from kexp.kexp_client import KexpClient
+    from tests.conftest import FakeResponse
+
+    monkeypatch.setitem(http.request_json.__kwdefaults__, "sleep", lambda *_: None)
+    fake_session.queue(
+        "get",
+        FakeResponse(502, text="Bad Gateway"),
+        FakeResponse(502, text="Bad Gateway"),
+        FakeResponse(200, {"results": [{"id": 1}]}),
+    )
+    kc = KexpClient(fake_session)
+
+    plays = kc.fetch_plays("2026-01-01T00:00:00", "2026-01-01T01:00:00")
+    assert plays == [{"id": 1}]
+    assert len(fake_session.calls) == 3  # two retries, then success
+
+
+def test_fetch_plays_raises_after_persistent_5xx(fake_session, monkeypatch):
+    # A sustained KEXP outage must still surface as an error (not a silent empty
+    # list), so the run is visibly retried on the next schedule.
+    import kexp.http as http
+    from kexp.kexp_client import KexpClient
+    from tests.conftest import FakeResponse
+
+    monkeypatch.setitem(http.request_json.__kwdefaults__, "sleep", lambda *_: None)
+    fake_session.queue(
+        "get",
+        FakeResponse(502, text="Bad Gateway"),
+        FakeResponse(502, text="Bad Gateway"),
+        FakeResponse(502, text="Bad Gateway"),
+    )
+    kc = KexpClient(fake_session)
+
+    with pytest.raises(requests.HTTPError):
+        kc.fetch_plays("2026-01-01T00:00:00", "2026-01-01T01:00:00")

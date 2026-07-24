@@ -18,7 +18,8 @@ Every 10 minutes (gated to the live show hours) the pipeline:
    add-time dedupe and the near-duplicate report).
 2. **One-time backfill** — on first run, walks weekday morning shows from
    `BACKFILL_START_DATE` (default `2025-01-01`) → today and matches every play.
-   Recorded as done in `data/seen.json` so it never repeats.
+   Recorded as done in `data/seen.json`, so it runs once by default (re-runnable
+   by setting `FORCE_BACKFILL_ONCE=1`).
 3. **Live window** — fetches KEXP plays for a rolling 12-minute window
    (`ROLLING_WINDOW_MINUTES`, overlapping the 10-minute cron so nothing is missed),
    keeps only *The Morning Show* trackplays whose host is **John Richards**
@@ -46,7 +47,7 @@ blips instead of failing the run or silently dropping a play.
 
 ## Project layout
 
-```
+```text
 kexp/
   pipeline.py       Orchestration — main() wires everything together
   config.py         Typed config loaded from the environment
@@ -76,7 +77,8 @@ python scripts/run.py
 ```
 
 Set `DO_SPOTIFY_ADDS=0` for a **dry run**: the pipeline reads, matches, and logs
-what it *would* do, but issues no add/PUT/POST/DELETE to Spotify.
+what it *would* do, but issues no playlist mutations (no track add/PUT/DELETE).
+It still refreshes the Spotify OAuth token, so one token-refresh `POST` is made.
 
 ### Tests
 

@@ -2,9 +2,11 @@ import pytest
 import requests
 
 
-def test_is_john_show_failure_not_cached_and_rechecked(fake_session):
+def test_is_john_show_failure_not_cached_and_rechecked(fake_session, monkeypatch):
+    import kexp.http as http
     from kexp.kexp_client import KexpClient
 
+    monkeypatch.setitem(http.request_json.__kwdefaults__, "sleep", lambda *_: None)
     calls = {"n": 0}
 
     def flaky_get(url, **kw):
@@ -15,9 +17,31 @@ def test_is_john_show_failure_not_cached_and_rechecked(fake_session):
     kc = KexpClient(fake_session)
 
     assert kc.is_john_show("http://x/shows/1") is False
+    first = calls["n"]  # attempts made by one lookup (request_json's retry count)
     assert kc.is_john_show("http://x/shows/1") is False
-    # Not memoized as a failure — the client re-checked (hit the network) both times.
-    assert calls["n"] == 2
+    # Not memoized as a failure — the second lookup hit the network again
+    # (attempt count doubled) rather than returning a cached False.
+    assert calls["n"] == 2 * first
+    assert first > 1  # request_json actually retried the transient error
+
+
+def test_is_john_show_retries_transient_5xx_then_succeeds(fake_session, monkeypatch):
+    # A transient 502 on the per-show host lookup used to make is_john_show return
+    # False, silently dropping a real John-Richards play. It now retries first.
+    import kexp.http as http
+    from kexp.kexp_client import KexpClient
+    from tests.conftest import FakeResponse
+
+    monkeypatch.setitem(http.request_json.__kwdefaults__, "sleep", lambda *_: None)
+    fake_session.queue(
+        "get",
+        FakeResponse(502, text="Bad Gateway"),
+        FakeResponse(200, {"hosts": [26], "host_names": ["John Richards"]}),
+    )
+    kc = KexpClient(fake_session)
+
+    assert kc.is_john_show("http://x/shows/1") is True
+    assert len(fake_session.calls) == 2  # one retry, then success
 
 
 def test_is_john_show_true_result_is_cached(fake_session):

@@ -5313,6 +5313,9 @@
     "reorder_done_2026-08-10": true,
     "email_sent_2026-08-11": true,
     "dedupe_done_2026-08-11": true,
-    "reorder_done_2026-08-11": true
+    "reorder_done_2026-08-11": true,
+    "email_sent_2026-08-12": true,
+    "dedupe_done_2026-08-12": true,
+    "reorder_done_2026-08-12": true
   }
 }

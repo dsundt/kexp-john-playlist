@@ -237,3 +237,56 @@ def test_main_runs_dedupe_before_reorder(tmp_path, monkeypatch):
     assert call_order == ["dedupe", "reorder"], (
         f"expected dedupe before reorder, got {call_order}"
     )
+
+
+def test_main_skips_spotify_when_no_work_pending(tmp_path, monkeypatch):
+    """Outside the weekday 7-11am PT window (backfill done), main() must skip
+    the Spotify token refresh + playlist pre-fetch. The unconditional 24/7
+    pre-fetch was making thousands of idle Spotify calls a day and tripping
+    Spotify's rate limiter (HTTP 429)."""
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("data", exist_ok=True)
+    with open("data/seen.json", "w") as f:
+        json.dump({"keys": [], "flags": {"backfill_done_range": True}}, f)
+
+    env = {
+        "SPOTIFY_CLIENT_ID": "i", "SPOTIFY_CLIENT_SECRET": "s",
+        "SPOTIFY_REFRESH_TOKEN": "r", "SPOTIFY_PLAYLIST_ID": "pl",
+        "DO_SPOTIFY_ADDS": "0",
+        "DO_EMAIL": "0",
+    }
+    # Saturday 3am PT: no live window, no email/reorder/dedupe, backfill done.
+    now = datetime(2026, 7, 25, 3, 0, tzinfo=PT)
+
+    session = RoutingSession()
+    pipeline.main(session=session, env=env, now=now)
+
+    assert session.calls == [], (
+        f"idle run must make zero HTTP calls, got: {session.calls}"
+    )
+    # Heartbeat still written so the health indicator stays fresh.
+    assert os.path.exists("data/heartbeat.json")
+
+
+def test_main_still_fetches_during_active_window(tmp_path, monkeypatch):
+    """Guard the idle skip: a weekday 7-11am PT tick must still fetch the
+    playlist (the skip must not eat the morning show window)."""
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("data", exist_ok=True)
+    with open("data/seen.json", "w") as f:
+        json.dump({"keys": [], "flags": {"backfill_done_range": True}}, f)
+
+    env = {
+        "SPOTIFY_CLIENT_ID": "i", "SPOTIFY_CLIENT_SECRET": "s",
+        "SPOTIFY_REFRESH_TOKEN": "r", "SPOTIFY_PLAYLIST_ID": "pl",
+        "DO_SPOTIFY_ADDS": "0",
+        "DO_EMAIL": "0",
+    }
+    now = datetime(2026, 7, 23, 7, 30, tzinfo=PT)  # Thursday 7:30am PT
+
+    session = RoutingSession()
+    pipeline.main(session=session, env=env, now=now)
+
+    playlist_calls = [c for c in session.calls
+                      if "api.spotify.com/v1/playlists" in c.get("url", "")]
+    assert playlist_calls, "active-window run must still fetch the playlist"

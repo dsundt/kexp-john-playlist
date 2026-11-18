@@ -598,6 +598,26 @@ def _gate_ok(now_pt, hour, minute):
     return True, ""
 
 
+def _spotify_work_pending(now_pt, seen) -> bool:
+    """True when this tick may consume the Spotify playlist pre-fetch.
+
+    ``main`` pre-fetches the whole playlist (snapshot_id + every paged track,
+    ~40 API calls) on EVERY tick to build add-time dedupe membership and the
+    daily near-dupe report. Those are only consumed on weekdays between 7am and
+    11am PT (the live window, backfill, and the daily email). Reorder and
+    dedupe re-fetch the playlist internally, so they do not need the pre-fetch.
+    Running the pre-fetch every 10 minutes, 24/7, otherwise makes thousands of
+    Spotify calls a day with nothing to show for it and trips Spotify's rate
+    limiter (HTTP 429). Skip Spotify work entirely when nothing here can use it
+    -- but never while the one-time backfill is still incomplete.
+    """
+    if seen.get("flags", {}).get("backfill_done_range") is not True:
+        return True
+    if now_pt.weekday() >= 5:
+        return False
+    return 7 <= now_pt.hour < 11
+
+
 def maybe_reorder(client, config, token, seen, *, now_pt, now_str, opts, dry_run):
     if not config.do_reorder:
         return False, "Reorder disabled"
@@ -663,6 +683,14 @@ def main(session=None, env=None, now=None):
         if feed_mod.normalize_if_needed(FEED_PATH, max_items=config.feed_max_items,
                                         title=FEED_TITLE, link=FEED_LINK, desc=FEED_DESC):
             print("Feed normalized (healed malformed XML and/or trimmed to cap).")
+
+        seen = load_seen()
+        if not _spotify_work_pending(now_pt, seen):
+            print(f"No Spotify work this tick ({now_pt.isoformat()}); "
+                  "skipping token refresh and playlist fetch.")
+            alerting.write_heartbeat(HEARTBEAT_PATH, now_str=now_pt.isoformat(),
+                                     counts=counts)
+            return counts
 
         token = sp.refresh_token()
 
